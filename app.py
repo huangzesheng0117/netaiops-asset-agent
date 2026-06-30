@@ -383,9 +383,8 @@ def _v3_canary_extract_value(local_context, response, candidate_keys):
     local_context = local_context if isinstance(local_context, dict) else {}
     candidate_keys = tuple(candidate_keys)
 
-    # Critical: prefer original request context before response.
-    # append_turn() can replace invalid canary conversation_id with a new UUID,
-    # so response["conversation_id"] is not reliable for canary prefix matching.
+    # V3.3-17 audit fix: original request context has priority over response.
+    # append_turn() may replace invalid canary conversation_id with a UUID.
     for key in candidate_keys:
         value = local_context.get(key)
         if value not in (None, ""):
@@ -423,7 +422,6 @@ def _v3_canary_low_risk_action(question):
     if not text:
         return "", "empty_question"
 
-    # Hard positive execution/configuration requests remain blocked.
     positive_danger_tokens = (
         "立即执行",
         "直接执行",
@@ -444,14 +442,7 @@ def _v3_canary_low_risk_action(question):
     if _v3_canary_contains_any(text, positive_danger_tokens):
         return "", "question_not_low_risk_canary"
 
-    # Whitelist first. These phrases explicitly constrain the request to text/advice.
-    # They may contain words like "查询设备" or "重启" in a negative/explanatory sense,
-    # so they must not be killed by later substring checks.
-    if "只给运维建议" in text or ("建议" in text and "不要生成命令" in text):
-        return "advice_analysis", "ok"
-    if "只做文本解释" in text or "解释一下" in text or "只分析不要执行" in text or "不要生成命令" in text:
-        return "general_chat", "ok"
-
+    query_tokens = ("查一下", "查询设备", "管理IP", "管理 IP", "设备类型", "CMDB", "cmdb")
     negative_query_phrases = (
         "不要查询设备",
         "不查询设备",
@@ -460,18 +451,108 @@ def _v3_canary_low_risk_action(question):
         "不要查设备",
         "不查设备",
     )
-    query_tokens = ("查一下", "查询设备", "管理IP", "管理 IP", "设备类型", "CMDB", "cmdb")
     if _v3_canary_contains_any(text, query_tokens) and not _v3_canary_contains_any(text, negative_query_phrases):
         return "", "question_not_low_risk_canary"
+
+    advice_tokens = (
+        "是否建议",
+        "建议",
+        "风险",
+        "是否需要",
+        "是否应该",
+        "应该如何",
+        "如何处理",
+        "怎么处理",
+        "排查思路",
+        "运维建议",
+    )
+    explicit_advice_constraints = (
+        "只给运维建议",
+        "不要生成命令",
+        "不生成命令",
+        "无需生成命令",
+    )
+    if _v3_canary_contains_any(text, advice_tokens) and _v3_canary_contains_any(text, explicit_advice_constraints):
+        return "advice_analysis", "ok"
+
+    general_tokens = (
+        "只做文本解释",
+        "解释一下",
+        "请解释",
+        "说明一下",
+        "什么是",
+        "是什么",
+        "含义",
+        "作用",
+        "区别",
+        "原理",
+        "为什么",
+        "如何理解",
+        "只分析不要执行",
+        "不要生成命令",
+    )
+    if _v3_canary_contains_any(text, general_tokens):
+        return "general_chat", "ok"
 
     return "", "question_not_low_risk_canary"
 
 
+def _v3_canary_audit_path():
+    try:
+        import datetime as _dt
+        import os
+        from pathlib import Path
+        audit_dir = Path(os.getenv(
+            "NETAIOPS_V3_TAKEOVER_AUDIT_DIR",
+            "/var/lib/netaiops-asset-agent/data/v3_takeover_audit",
+        ))
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        return audit_dir / f"takeover_{_dt.datetime.now().strftime('%Y%m%d')}.jsonl", ""
+    except Exception as exc:
+        return None, repr(exc)
+
+
+def _v3_canary_write_audit(event):
+    try:
+        import datetime as _dt
+        import json
+        path, path_error = _v3_canary_audit_path()
+        if path is None:
+            return f"audit_path_error:{path_error}"
+        record = dict(event or {})
+        record.setdefault("timestamp", _dt.datetime.now().isoformat(timespec="seconds"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        return ""
+    except Exception as exc:
+        return repr(exc)
+
+
+def _v3_canary_should_audit(user, conversation_id):
+    allowed_users = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_USERS", "")
+    allowed_prefixes = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_CONVERSATION_PREFIX", "")
+    user = str(user or "")
+    conversation_id = str(conversation_id or "")
+    return (
+        bool(allowed_users and user in allowed_users)
+        or bool(allowed_prefixes and any(conversation_id.startswith(prefix) for prefix in allowed_prefixes))
+    )
+
+
 def _v3_apply_chat_canary_takeover(response, local_context=None, route_label=""):
+    audit_event = {
+        "version": "v3.3.17",
+        "mode": "canary",
+        "route_label": route_label,
+        "taken": False,
+        "reason": "not_evaluated",
+    }
     try:
         if not _v3_canary_env_bool("NETAIOPS_V3_TAKEOVER_ENABLED", "0"):
+            audit_event["reason"] = "disabled"
             return response
         if not isinstance(response, dict):
+            audit_event["reason"] = "response_not_dict"
             return response
 
         local_context = local_context if isinstance(local_context, dict) else {}
@@ -488,21 +569,45 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             ("question", "message", "prompt", "query", "content", "text"),
         )
 
+        audit_event.update(
+            {
+                "user": user,
+                "conversation_id": conversation_id,
+                "question_len": len(str(question or "")),
+                "question_prefix": str(question or "")[:120],
+            }
+        )
+
+        should_audit = _v3_canary_should_audit(user, conversation_id)
         allowed_users = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_USERS", "")
         allowed_prefixes = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_CONVERSATION_PREFIX", "")
         allowed_actions = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_ACTIONS", "general_chat,advice_analysis")
         allowed_sources = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_SOURCES", "llm")
 
+        def _finish(reason, output_response, **extra):
+            audit_event.update(extra)
+            audit_event["reason"] = reason
+            audit_error = ""
+            if should_audit:
+                audit_error = _v3_canary_write_audit(audit_event)
+            if audit_error and isinstance(output_response, dict):
+                safe_output = dict(output_response)
+                safe_output["v3_audit_error"] = audit_error
+                return safe_output
+            return output_response
+
         if not allowed_users or user not in allowed_users:
-            return response
+            return _finish("user_not_allowed", response)
         if not allowed_prefixes or not any(conversation_id.startswith(prefix) for prefix in allowed_prefixes):
-            return response
+            return _finish("conversation_prefix_not_allowed", response)
 
         action, action_reason = _v3_canary_low_risk_action(question)
+        audit_event["action"] = action
+        audit_event["action_reason"] = action_reason
         if not action:
-            return response
+            return _finish(action_reason, response)
         if allowed_actions and "*" not in allowed_actions and action not in allowed_actions:
-            return response
+            return _finish("action_not_allowed", response, allowed_actions=sorted(allowed_actions))
 
         from netaiops_asset.chat_v3.response_generator import generate_v3_response
         from netaiops_asset.chat_v3.takeover_response import evaluate_response_readiness
@@ -520,7 +625,7 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
         decision = {
             "action": action,
             "accepted": True,
-            "reason": "v3_3_16_canary_request_context_v2",
+            "reason": "v3_3_17_canary_audit_fix",
             "confidence": 1.0,
             "effective_confidence": 1.0,
             "requires_confirmation": False,
@@ -530,7 +635,7 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             "enabled": True,
             "eligible": True,
             "takeover": True,
-            "reason": "v3_3_16_canary_request_context_v2",
+            "reason": "v3_3_17_canary_audit_fix",
             "action": action,
             "handler_key": action,
             "response_mode": plan["response_mode"],
@@ -552,16 +657,19 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             allow_live_llm=_v3_canary_env_bool("NETAIOPS_V3_RESPONSE_GENERATOR_LIVE_LLM", "0"),
         ).as_dict()
 
-        if generated.get("ready") is not True:
-            return response
+        audit_event["generator_ready"] = generated.get("ready")
+        audit_event["generator_source"] = generated.get("source")
+        audit_event["generator_reason"] = generated.get("reason")
 
+        if generated.get("ready") is not True:
+            return _finish("generator_not_ready", response)
         source = str(generated.get("source") or "")
         if allowed_sources and source not in allowed_sources:
-            return response
+            return _finish("source_not_allowed", response, source=source, allowed_sources=sorted(allowed_sources))
 
         answer = str(generated.get("answer") or "").strip()
         if not answer:
-            return response
+            return _finish("empty_answer", response)
 
         plan_after = dict(plan)
         plan_after["answer"] = answer
@@ -570,8 +678,10 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             decision=decision,
             gate=gate,
         ).as_dict()
+        audit_event["readiness_ready"] = readiness.get("ready")
+        audit_event["readiness_reason"] = readiness.get("reason")
         if readiness.get("ready") is not True:
-            return response
+            return _finish("readiness_not_ready", response)
 
         mutated = dict(response)
         mutated["answer"] = answer
@@ -583,12 +693,19 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
         mutated["v3_takeover_action"] = action
         mutated["v3_takeover_source"] = source
         mutated["v3_takeover_route_label"] = route_label
-        mutated["v3_takeover_reason"] = "v3_3_16_canary_request_context_v2"
-        return mutated
+        mutated["v3_takeover_reason"] = "v3_3_17_canary_audit_fix"
+        audit_event["taken"] = True
+        audit_event["answer_len"] = len(answer)
+        return _finish("taken", mutated, source=source)
     except Exception as exc:
+        audit_event["reason"] = "exception"
+        audit_event["error"] = repr(exc)
+        audit_error = _v3_canary_write_audit(audit_event)
         if isinstance(response, dict):
             safe_response = dict(response)
             safe_response["v3_takeover_error"] = repr(exc)
+            if audit_error:
+                safe_response["v3_audit_error"] = audit_error
             return safe_response
         return response
 # V3_ROUTE_RETURN_CANARY_MARKER_END
