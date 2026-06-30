@@ -316,6 +316,283 @@ def _v3_shadow_write(shadow_state, question, user, conversation_id, v2_route, v2
         )
     except Exception:
         pass
+
+# V3_ROUTE_RETURN_CANARY_MARKER_BEGIN
+def _v3_canary_env_bool(name, default="0"):
+    try:
+        import os
+        return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    except Exception:
+        return False
+
+
+def _v3_canary_env_csv(name, default=""):
+    try:
+        import os
+        raw = str(os.getenv(name, default) or "")
+        return {item.strip() for item in raw.split(",") if item.strip()}
+    except Exception:
+        return set()
+
+
+def _v3_canary_as_dict(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    for method_name in ("model_dump", "dict", "as_dict"):
+        try:
+            method = getattr(value, method_name, None)
+            if callable(method):
+                data = method()
+                if isinstance(data, dict):
+                    return dict(data)
+        except Exception:
+            pass
+    try:
+        data = vars(value)
+        if isinstance(data, dict):
+            return dict(data)
+    except Exception:
+        pass
+    return {}
+
+
+def _v3_canary_get_key(obj, key):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        value = obj.get(key)
+        if value not in (None, ""):
+            return value
+    data = _v3_canary_as_dict(obj)
+    if isinstance(data, dict):
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    try:
+        value = getattr(obj, key)
+        if value not in (None, ""):
+            return value
+    except Exception:
+        pass
+    return None
+
+
+def _v3_canary_extract_value(local_context, response, candidate_keys):
+    local_context = local_context if isinstance(local_context, dict) else {}
+    candidate_keys = tuple(candidate_keys)
+
+    # Critical: prefer original request context before response.
+    # append_turn() can replace invalid canary conversation_id with a new UUID,
+    # so response["conversation_id"] is not reliable for canary prefix matching.
+    for key in candidate_keys:
+        value = local_context.get(key)
+        if value not in (None, ""):
+            return str(value)
+
+    for preferred_name in ("payload", "req", "request_payload", "chat_request"):
+        preferred = local_context.get(preferred_name)
+        for key in candidate_keys:
+            value = _v3_canary_get_key(preferred, key)
+            if value not in (None, ""):
+                return str(value)
+
+    for obj_name, obj in local_context.items():
+        if obj_name in {"response", "_v3_response", "v2_response"}:
+            continue
+        for key in candidate_keys:
+            value = _v3_canary_get_key(obj, key)
+            if value not in (None, ""):
+                return str(value)
+
+    for key in candidate_keys:
+        value = _v3_canary_get_key(response, key)
+        if value not in (None, ""):
+            return str(value)
+
+    return ""
+
+
+def _v3_canary_contains_any(text, tokens):
+    return any(token and token in text for token in tokens)
+
+
+def _v3_canary_low_risk_action(question):
+    text = str(question or "").strip()
+    if not text:
+        return "", "empty_question"
+
+    # Hard positive execution/configuration requests remain blocked.
+    positive_danger_tokens = (
+        "立即执行",
+        "直接执行",
+        "马上执行",
+        "帮我执行",
+        "请执行",
+        "开始执行",
+        "继续执行",
+        "确认执行",
+        "直接下发",
+        "帮我下发",
+        "下发配置",
+        "修改配置",
+        "删除配置",
+        "创建策略",
+        "重启设备",
+    )
+    if _v3_canary_contains_any(text, positive_danger_tokens):
+        return "", "question_not_low_risk_canary"
+
+    # Whitelist first. These phrases explicitly constrain the request to text/advice.
+    # They may contain words like "查询设备" or "重启" in a negative/explanatory sense,
+    # so they must not be killed by later substring checks.
+    if "只给运维建议" in text or ("建议" in text and "不要生成命令" in text):
+        return "advice_analysis", "ok"
+    if "只做文本解释" in text or "解释一下" in text or "只分析不要执行" in text or "不要生成命令" in text:
+        return "general_chat", "ok"
+
+    negative_query_phrases = (
+        "不要查询设备",
+        "不查询设备",
+        "无需查询设备",
+        "不需要查询设备",
+        "不要查设备",
+        "不查设备",
+    )
+    query_tokens = ("查一下", "查询设备", "管理IP", "管理 IP", "设备类型", "CMDB", "cmdb")
+    if _v3_canary_contains_any(text, query_tokens) and not _v3_canary_contains_any(text, negative_query_phrases):
+        return "", "question_not_low_risk_canary"
+
+    return "", "question_not_low_risk_canary"
+
+
+def _v3_apply_chat_canary_takeover(response, local_context=None, route_label=""):
+    try:
+        if not _v3_canary_env_bool("NETAIOPS_V3_TAKEOVER_ENABLED", "0"):
+            return response
+        if not isinstance(response, dict):
+            return response
+
+        local_context = local_context if isinstance(local_context, dict) else {}
+
+        user = _v3_canary_extract_value(local_context, response, ("user", "username", "operator"))
+        conversation_id = _v3_canary_extract_value(
+            local_context,
+            response,
+            ("conversation_id", "conversationId", "session_id", "sessionId"),
+        )
+        question = _v3_canary_extract_value(
+            local_context,
+            response,
+            ("question", "message", "prompt", "query", "content", "text"),
+        )
+
+        allowed_users = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_USERS", "")
+        allowed_prefixes = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_CONVERSATION_PREFIX", "")
+        allowed_actions = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_ACTIONS", "general_chat,advice_analysis")
+        allowed_sources = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_SOURCES", "llm")
+
+        if not allowed_users or user not in allowed_users:
+            return response
+        if not allowed_prefixes or not any(conversation_id.startswith(prefix) for prefix in allowed_prefixes):
+            return response
+
+        action, action_reason = _v3_canary_low_risk_action(question)
+        if not action:
+            return response
+        if allowed_actions and "*" not in allowed_actions and action not in allowed_actions:
+            return response
+
+        from netaiops_asset.chat_v3.response_generator import generate_v3_response
+        from netaiops_asset.chat_v3.takeover_response import evaluate_response_readiness
+
+        plan = {
+            "action": action,
+            "handler_key": action,
+            "response_mode": "advice" if action == "advice_analysis" else "chat",
+            "confidence": 1.0,
+            "effective_confidence": 1.0,
+            "accepted": True,
+            "requires_confirmation": False,
+            "safety_allowed": True,
+        }
+        decision = {
+            "action": action,
+            "accepted": True,
+            "reason": "v3_3_16_canary_request_context_v2",
+            "confidence": 1.0,
+            "effective_confidence": 1.0,
+            "requires_confirmation": False,
+            "safety_allowed": True,
+        }
+        gate = {
+            "enabled": True,
+            "eligible": True,
+            "takeover": True,
+            "reason": "v3_3_16_canary_request_context_v2",
+            "action": action,
+            "handler_key": action,
+            "response_mode": plan["response_mode"],
+            "mode": "canary",
+        }
+        context = {
+            "question": question,
+            "route_label": route_label,
+            "v2_response": response,
+        }
+
+        generated = generate_v3_response(
+            question=question,
+            conversation_id=conversation_id,
+            plan=plan,
+            decision=decision,
+            context=context,
+            gate=gate,
+            allow_live_llm=_v3_canary_env_bool("NETAIOPS_V3_RESPONSE_GENERATOR_LIVE_LLM", "0"),
+        ).as_dict()
+
+        if generated.get("ready") is not True:
+            return response
+
+        source = str(generated.get("source") or "")
+        if allowed_sources and source not in allowed_sources:
+            return response
+
+        answer = str(generated.get("answer") or "").strip()
+        if not answer:
+            return response
+
+        plan_after = dict(plan)
+        plan_after["answer"] = answer
+        readiness = evaluate_response_readiness(
+            plan=plan_after,
+            decision=decision,
+            gate=gate,
+        ).as_dict()
+        if readiness.get("ready") is not True:
+            return response
+
+        mutated = dict(response)
+        mutated["answer"] = answer
+        mutated["message"] = answer
+        mutated["status"] = "ok"
+        mutated["planner_source"] = "v3_response_generator"
+        mutated["v3_takeover"] = True
+        mutated["v3_takeover_mode"] = "canary"
+        mutated["v3_takeover_action"] = action
+        mutated["v3_takeover_source"] = source
+        mutated["v3_takeover_route_label"] = route_label
+        mutated["v3_takeover_reason"] = "v3_3_16_canary_request_context_v2"
+        return mutated
+    except Exception as exc:
+        if isinstance(response, dict):
+            safe_response = dict(response)
+            safe_response["v3_takeover_error"] = repr(exc)
+            return safe_response
+        return response
+# V3_ROUTE_RETURN_CANARY_MARKER_END
+
 # V3_SHADOW_MODE_MARKER_END
 
 
@@ -344,7 +621,15 @@ async def v2_chat_router_middleware(request, call_next):
                 batch67_advice_response = _batch67_try_handle_advice_analysis(locals())
                 if batch67_advice_response is not None:
                     _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_advice_analysis", batch67_advice_response)
-                    return JSONResponse(batch67_advice_response)
+                    return JSONResponse(
+                        _v3_apply_chat_canary_takeover(
+                            response=(
+                            batch67_advice_response
+                            ),
+                            local_context=locals(),
+                            route_label="middleware_jsonresponse_line_624",
+                        )
+                    )
                 # batch58_semantic_route_main
                 # batch63_inline_command_execution
                 # 用户输入中直接包含“立即执行 show/display 命令”时，优先提取并执行这些只读命令，
@@ -358,17 +643,33 @@ async def v2_chat_router_middleware(request, call_next):
                     if inline_response:
                         inline_response = _batch66_sync_history_before_return(locals(), inline_response)
                         _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_inline_command_execute", inline_response)
-                        return JSONResponse(inline_response)
+                        return JSONResponse(
+                            _v3_apply_chat_canary_takeover(
+                                response=(
+                                inline_response
+                                ),
+                                local_context=locals(),
+                                route_label="middleware_jsonresponse_line_638",
+                            )
+                        )
                 except Exception as _batch63_inline_exc:
                     try:
                         _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_inline_command_execute_error", None, extra={"inline_error": repr(_batch63_inline_exc)})
-                        return JSONResponse({
-                            "status": "error",
-                            "planner_source": "v2_inline_command_execution",
-                            "answer": "内联命令执行分支异常：{}".format(repr(_batch63_inline_exc)),
-                            "items": [],
-                            "v2": {"inline_error": repr(_batch63_inline_exc)},
-                        })
+                        return JSONResponse(
+                            _v3_apply_chat_canary_takeover(
+                                response=(
+                                {
+                                                            "status": "error",
+                                                            "planner_source": "v2_inline_command_execution",
+                                                            "answer": "内联命令执行分支异常：{}".format(repr(_batch63_inline_exc)),
+                                                            "items": [],
+                                                            "v2": {"inline_error": repr(_batch63_inline_exc)},
+                                                        }
+                                ),
+                                local_context=locals(),
+                                route_label="middleware_jsonresponse_line_642",
+                            )
+                        )
                     except Exception:
                         pass
 
@@ -414,7 +715,15 @@ async def v2_chat_router_middleware(request, call_next):
                                 pass
                         confirm_response = _batch66_sync_history_before_return(locals(), confirm_response)
                         _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_semantic_execution_confirmation", confirm_response)
-                        return JSONResponse(confirm_response)
+                        return JSONResponse(
+                            _v3_apply_chat_canary_takeover(
+                                response=(
+                                confirm_response
+                                ),
+                                local_context=locals(),
+                                route_label="middleware_jsonresponse_line_694",
+                            )
+                        )
                 elif semantic_route == 'v2_followup_analysis':
                     followup_response = try_handle_v2_followup_analysis_forced(
                         question,
@@ -427,7 +736,15 @@ async def v2_chat_router_middleware(request, call_next):
                     if followup_response is not None:
                         followup_response = _batch66_sync_history_before_return(locals(), followup_response)
                         _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_semantic_followup_analysis", followup_response)
-                        return JSONResponse(followup_response)
+                        return JSONResponse(
+                            _v3_apply_chat_canary_takeover(
+                                response=(
+                                followup_response
+                                ),
+                                local_context=locals(),
+                                route_label="middleware_jsonresponse_line_707",
+                            )
+                        )
 
                 # batch57_execution_priority_pre_followup
                 if is_v2_execution_request_question(question):
@@ -463,7 +780,15 @@ async def v2_chat_router_middleware(request, call_next):
                                 pass
                         confirm_response = _batch66_sync_history_before_return(locals(), confirm_response)
                         _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_execution_request_confirmation", confirm_response)
-                        return JSONResponse(confirm_response)
+                        return JSONResponse(
+                            _v3_apply_chat_canary_takeover(
+                                response=(
+                                confirm_response
+                                ),
+                                local_context=locals(),
+                                route_label="middleware_jsonresponse_line_743",
+                            )
+                        )
 
                 followup_response = try_handle_v2_followup_analysis(
                     question,
@@ -498,7 +823,15 @@ async def v2_chat_router_middleware(request, call_next):
                         pass
                     followup_response = _batch66_sync_history_before_return(locals(), followup_response)
                     _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_followup_analysis", followup_response)
-                    return JSONResponse(followup_response)
+                    return JSONResponse(
+                        _v3_apply_chat_canary_takeover(
+                            response=(
+                            followup_response
+                            ),
+                            local_context=locals(),
+                            route_label="middleware_jsonresponse_line_778",
+                        )
+                    )
 
                 normalized_confirm_question = normalize_execution_confirmation_question(question)
                 confirm_response = try_handle_v2_execution_confirmation(
@@ -540,7 +873,15 @@ async def v2_chat_router_middleware(request, call_next):
                         pass
                     confirm_response = _batch66_sync_history_before_return(locals(), confirm_response)
                     _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_execution_confirmation", confirm_response)
-                    return JSONResponse(confirm_response)
+                    return JSONResponse(
+                        _v3_apply_chat_canary_takeover(
+                            response=(
+                            confirm_response
+                            ),
+                            local_context=locals(),
+                            route_label="middleware_jsonresponse_line_820",
+                        )
+                    )
 
                 v2_response = try_handle_v2_chat(question, user=user, conversation_id=conversation_id)
                 if v2_response is not None:
@@ -581,7 +922,15 @@ async def v2_chat_router_middleware(request, call_next):
                         pass
                     v2_response = _batch66_sync_history_before_return(locals(), v2_response)
                     _v3_shadow_write(v3_shadow_state, question, user, conversation_id, "v2_chat_router", v2_response)
-                    return JSONResponse(v2_response)
+                    return JSONResponse(
+                        _v3_apply_chat_canary_takeover(
+                            response=(
+                            v2_response
+                            ),
+                            local_context=locals(),
+                            route_label="middleware_jsonresponse_line_861",
+                        )
+                    )
         except Exception as exc:
             # Do not break existing V1 chat flow if V2 router fails.
             try:
@@ -1520,7 +1869,13 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
         cid, _ = append_turn(req.conversation_id, req.question, response, user=req.user)
         response["conversation_id"] = cid
-        return response
+        return _v3_apply_chat_canary_takeover(
+            response=(
+                response
+            ),
+            local_context=locals(),
+            route_label="chat_return_line_1800",
+        )
 
     llm_cfg = get_config().get("llm", {})
 
@@ -1595,7 +1950,13 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         }
         cid, _ = append_turn(req.conversation_id, req.question, response, user=req.user)
         response["conversation_id"] = cid
-        return response
+        return _v3_apply_chat_canary_takeover(
+            response=(
+                response
+            ),
+            local_context=locals(),
+            route_label="chat_return_line_1875",
+        )
 
     if parsed.get("intent") == "query_device_detail":
         result = tool_query_cmdb_device_detail(
@@ -1645,7 +2006,13 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
     cid, _ = append_turn(req.conversation_id, req.question, response, user=req.user)
     response["conversation_id"] = cid
-    return response
+    return _v3_apply_chat_canary_takeover(
+        response=(
+            response
+        ),
+        local_context=locals(),
+        route_label="chat_return_line_1925",
+    )
 
 
 @app.post("/api/v1/netmiko/validate_commands")
