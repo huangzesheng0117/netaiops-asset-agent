@@ -121,6 +121,65 @@ def main() -> int:
     )
     assert_case("advice_fake_llm_ready", generated.ready is True and generated.action == "advice_analysis", generated.as_dict())
 
+    followup_context = {
+        "followup_context_available": True,
+        "followup_context_source": "v3_followup_context_store",
+        "followup_context_turn_count": 1,
+        "rolling_summary": "用户上一轮询问维护风险，助手已说明需要确认主备状态和流量路径。",
+        "recent_turns": [
+            {
+                "question": "维护前要确认什么？",
+                "answer_summary": "需要确认主备状态和流量路径。",
+            }
+        ],
+    }
+    fake = FakeLLM(
+        content="基于上一轮已有内容，最主要的风险是未确认流量路径就开始维护。"
+    )
+    generated = generate_v3_response(
+        question="继续分析上一轮内容中最主要的风险。",
+        conversation_id="conv-followup",
+        plan={
+            "action": "analyze_existing_evidence",
+            "handler_key": "analyze_existing_evidence",
+            "response_mode": "analysis",
+            "reason": "用户要求基于已有上下文继续分析",
+        },
+        gate=gate(),
+        context={"followup_context": followup_context},
+        allow_live_llm=True,
+        llm_client=fake,
+    )
+    assert_case(
+        "followup_fake_llm_ready",
+        generated.ready is True
+        and generated.action == "analyze_existing_evidence"
+        and generated.source == "llm"
+        and fake.called == 1
+        and "维护前要确认什么" in str(fake.messages),
+        generated.as_dict(),
+    )
+
+    generated = generate_v3_response(
+        question="继续分析上一轮内容。",
+        conversation_id="conv-followup-missing",
+        plan={
+            "action": "analyze_existing_evidence",
+            "handler_key": "analyze_existing_evidence",
+            "response_mode": "analysis",
+        },
+        gate=gate(),
+        context={"followup_context": {}},
+        allow_live_llm=True,
+        llm_client=FakeLLM(),
+    )
+    assert_case(
+        "followup_missing_context_blocked",
+        generated.ready is False
+        and generated.reason == "missing_followup_context",
+        generated.as_dict(),
+    )
+
     fake = FakeLLM(status="error")
     generated = generate_v3_response(
         question="解释一下 StackWise Virtual",

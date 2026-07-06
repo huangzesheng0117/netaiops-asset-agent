@@ -258,19 +258,56 @@ def build_context_summary(context: Optional[Dict[str, Any]]) -> str:
     if not isinstance(context, dict):
         return ""
 
+    recent_turns = context.get("recent_turns") or context.get("previous_turns") or []
+    compact_turns = []
+    if isinstance(recent_turns, list):
+        for raw in recent_turns[-6:]:
+            if not isinstance(raw, dict):
+                continue
+            compact_turns.append(
+                {
+                    "question": str(raw.get("question") or "")[:1000],
+                    "answer_summary": str(
+                        raw.get("answer_summary")
+                        or raw.get("answer")
+                        or ""
+                    )[:1600],
+                    "planner_source": raw.get("planner_source"),
+                    "status": raw.get("status"),
+                    "action": raw.get("action"),
+                }
+            )
+
     compact = {
+        "original_conversation_id": context.get("original_conversation_id"),
+        "followup_context_available": bool(
+            context.get("followup_context_available")
+        ),
+        "followup_context_source": context.get("followup_context_source"),
+        "followup_context_turn_count": context.get(
+            "followup_context_turn_count"
+        ),
         "current_device": context.get("current_device"),
         "current_topic": context.get("current_topic"),
         "current_intent": context.get("current_intent"),
         "active_focus": context.get("active_focus"),
         "pending_commands_count": len(context.get("pending_commands") or []),
-        "last_command_suggestions_count": len(context.get("last_command_suggestions") or []),
+        "last_command_suggestions_count": len(
+            context.get("last_command_suggestions") or []
+        ),
         "last_executions_count": len(context.get("last_executions") or []),
-        "has_last_audit_path": bool(context.get("last_audit_path") or context.get("audit_path")),
+        "has_last_audit_path": bool(
+            context.get("last_audit_path") or context.get("audit_path")
+        ),
         "rolling_summary": context.get("rolling_summary"),
+        "recent_turns": compact_turns,
+        "last_analysis": context.get("last_analysis"),
+        "last_bulk_analysis": context.get("last_bulk_analysis"),
+        "last_followup_analysis": context.get("last_followup_analysis"),
     }
 
-    return json.dumps(compact, ensure_ascii=False, default=str)[:6000]
+    return json.dumps(compact, ensure_ascii=False, default=str)[:12000]
+
 
 
 def build_intent_messages(

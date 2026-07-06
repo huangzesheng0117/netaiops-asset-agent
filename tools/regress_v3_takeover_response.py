@@ -67,6 +67,19 @@ def main() -> int:
     assert_case("advice_with_answer_ready", ready.ready is True, ready.as_dict())
 
     plan = {
+        "action": "analyze_existing_evidence",
+        "handler_key": "analyze_existing_evidence",
+        "response_mode": "analysis",
+        "answer": "基于上一轮已有证据继续分析。",
+    }
+    ready = evaluate_response_readiness(plan=plan, gate=base_gate())
+    assert_case(
+        "followup_analysis_with_answer_ready",
+        ready.ready is True,
+        ready.as_dict(),
+    )
+
+    plan = {
         "action": "need_clarification",
         "handler_key": "need_clarification",
         "response_mode": "clarification",

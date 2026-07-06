@@ -175,8 +175,11 @@ DEFAULT_LEGACY_ROUTE_REGISTRY: dict[str, LegacyRouteMetadata] = {
         migration_stage="v3.4-4",
         fallback_policy=FALLBACK_POLICY_BY_ROUTE_TYPE["followup"],
         risk_boundary=RISK_BOUNDARY_BY_ROUTE_TYPE["followup"],
-        runtime_takeover_allowed=False,
-        notes="metadata only; follow-up convergence is deferred to V3.4-4",
+        runtime_takeover_allowed=True,
+        notes=(
+            "metadata only; V3.4-4 canary takeover uses LLM Intent Arbiter "
+            "action=analyze_existing_evidence with structured context bridge"
+        ),
     ),
     "v2_cmdb_query_return": LegacyRouteMetadata(
         legacy_branch_id="v2_cmdb_query_return",

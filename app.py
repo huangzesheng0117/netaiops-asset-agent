@@ -56,21 +56,53 @@ def _v3_shadow_enabled():
 
 def _v3_shadow_build(question, user=None, conversation_id=None, payload=None):
     if not _v3_shadow_enabled():
-        return {"enabled": False, "decision": None, "plan": None, "error": "shadow_disabled"}
+        return {
+            "enabled": False,
+            "decision": None,
+            "plan": None,
+            "followup_context": {},
+            "error": "shadow_disabled",
+        }
 
     question_text = str(question or "").strip()
     if not question_text:
-        return {"enabled": False, "decision": None, "plan": None, "error": "empty_question"}
+        return {
+            "enabled": False,
+            "decision": None,
+            "plan": None,
+            "followup_context": {},
+            "error": "empty_question",
+        }
 
     try:
+        from netaiops_asset.chat_v3.followup_context import build_followup_context
         from netaiops_asset.chat_v3.intent_arbiter import decide_intent
         from netaiops_asset.chat_v3.intent_dispatcher import build_dispatch_plan
 
-        context = {
-            "shadow_mode": True,
-            "conversation_id": conversation_id or "",
-            "payload_keys": sorted(list((payload or {}).keys())) if isinstance(payload, dict) else [],
-        }
+        followup_context = build_followup_context(
+            conversation_id=conversation_id,
+            user=user,
+        )
+        context = dict(followup_context.get("arbiter_context") or {})
+        context.update(
+            {
+                "shadow_mode": True,
+                "conversation_id": conversation_id or "",
+                "original_conversation_id": conversation_id or "",
+                "payload_keys": sorted(list((payload or {}).keys()))
+                if isinstance(payload, dict)
+                else [],
+                "followup_context_available": bool(
+                    followup_context.get("available")
+                ),
+                "followup_context_source": str(
+                    followup_context.get("source") or "none"
+                ),
+                "followup_context_turn_count": int(
+                    followup_context.get("turn_count") or 0
+                ),
+            }
+        )
 
         decision = decide_intent(
             question=question_text,
@@ -91,6 +123,7 @@ def _v3_shadow_build(question, user=None, conversation_id=None, payload=None):
             "enabled": True,
             "decision": decision,
             "plan": plan,
+            "followup_context": followup_context,
             "error": "",
         }
     except Exception as exc:
@@ -98,8 +131,10 @@ def _v3_shadow_build(question, user=None, conversation_id=None, payload=None):
             "enabled": True,
             "decision": None,
             "plan": None,
+            "followup_context": {},
             "error": repr(exc),
         }
+
 
 
 def _v3_shadow_response_summary(response):
@@ -318,7 +353,7 @@ def _v3_shadow_write(shadow_state, question, user, conversation_id, v2_route, v2
         pass
 
 # V3_ROUTE_RETURN_CANARY_MARKER_BEGIN
-# V3_4_3_PREFLIGHT_ARB_REBUILD_TEXT_ADVICE_R6_MARKER_BEGIN
+# V3_4_4_2_FOLLOWUP_CONTEXT_ARBITER_CONVERGENCE_MARKER_BEGIN
 def _v3_canary_env_bool(name, default="0"):
     try:
         import os
@@ -680,7 +715,7 @@ def _v3_canary_optional_shadow_write(shadow_state, question, user, conversation_
 
 def _v3_apply_chat_canary_takeover(response, local_context=None, route_label=""):
     audit_event = {
-        "version": "v3.4.3-r6",
+        "version": "v3.4.4-2-fix1",
         "mode": "canary",
         "route_label": route_label,
         "taken": False,
@@ -696,7 +731,11 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             return response
 
         local_context = local_context if isinstance(local_context, dict) else {}
-        user = _v3_canary_extract_value(local_context, response, ("user", "username", "operator"))
+        user = _v3_canary_extract_value(
+            local_context,
+            response,
+            ("user", "username", "operator"),
+        )
         conversation_id = _v3_canary_extract_value(
             local_context,
             response,
@@ -707,50 +746,211 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             response,
             ("question", "message", "prompt", "query", "content", "text"),
         )
-        audit_event.update({
-            "user": user,
-            "conversation_id": conversation_id,
-            "question_len": len(str(question or "")),
-            "question_prefix": str(question or "")[:120],
-        })
+        effective_conversation_id = str(
+            response.get("conversation_id") or conversation_id or ""
+        )
+        audit_event.update(
+            {
+                "user": user,
+                "conversation_id": conversation_id,
+                "original_conversation_id": conversation_id,
+                "effective_conversation_id": effective_conversation_id,
+                "question_len": len(str(question or "")),
+                "question_prefix": str(question or "")[:120],
+            }
+        )
 
         should_audit = _v3_canary_should_audit(user, conversation_id)
-        allowed_users = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_USERS", "")
-        allowed_prefixes = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_CONVERSATION_PREFIX", "")
+        allowed_users = _v3_canary_env_csv(
+            "NETAIOPS_V3_TAKEOVER_ALLOWED_USERS",
+            "",
+        )
+        allowed_prefixes = _v3_canary_env_csv(
+            "NETAIOPS_V3_TAKEOVER_CONVERSATION_PREFIX",
+            "",
+        )
         allowed_actions = _v3_canary_env_csv(
             "NETAIOPS_V3_TAKEOVER_ALLOWED_ACTIONS",
-            "general_chat,advice_analysis",
+            "general_chat,advice_analysis,analyze_existing_evidence",
         )
-        allowed_sources = _v3_canary_env_csv("NETAIOPS_V3_TAKEOVER_ALLOWED_SOURCES", "llm")
-        min_confidence = _v3_canary_env_float("NETAIOPS_V3_TAKEOVER_MIN_CONFIDENCE", "0.70")
+        allowed_sources = _v3_canary_env_csv(
+            "NETAIOPS_V3_TAKEOVER_ALLOWED_SOURCES",
+            "llm",
+        )
+        min_confidence = _v3_canary_env_float(
+            "NETAIOPS_V3_TAKEOVER_MIN_CONFIDENCE",
+            "0.70",
+        )
+        context_record_enabled = False
+
+        def _record_return_context(output_response, finish_reason):
+            audit_event["context_record_attempted"] = False
+            audit_event["context_recorded"] = False
+            audit_event["context_record_source"] = "not_triggered"
+
+            if not context_record_enabled:
+                audit_event["context_record_skip_reason"] = (
+                    "canary_trigger_not_confirmed"
+                )
+                return output_response
+            if not isinstance(output_response, dict):
+                audit_event["context_record_skip_reason"] = (
+                    "response_not_dict"
+                )
+                return output_response
+
+            answer_text = str(
+                output_response.get("answer")
+                or output_response.get("message")
+                or ""
+            ).strip()
+            if not answer_text:
+                audit_event["context_record_skip_reason"] = (
+                    "empty_answer"
+                )
+                return output_response
+
+            status_text = str(
+                output_response.get("status") or ""
+            ).strip().lower()
+            if status_text in {
+                "error",
+                "failed",
+                "failure",
+                "exception",
+            }:
+                audit_event["context_record_skip_reason"] = (
+                    "error_status"
+                )
+                return output_response
+            if not str(question or "").strip():
+                audit_event["context_record_skip_reason"] = (
+                    "empty_question"
+                )
+                return output_response
+            if not str(conversation_id or "").strip():
+                audit_event["context_record_skip_reason"] = (
+                    "empty_original_conversation_id"
+                )
+                return output_response
+
+            record_source = (
+                "v3_taken_return"
+                if (
+                    finish_reason == "taken"
+                    or output_response.get("v3_takeover") is True
+                )
+                else "v2_or_non_taken_return"
+            )
+            audit_event["context_record_attempted"] = True
+            audit_event["context_record_source"] = record_source
+
+            try:
+                from netaiops_asset.chat_v3.followup_context import (
+                    record_v3_turn,
+                )
+
+                store_result = record_v3_turn(
+                    conversation_id=conversation_id,
+                    user=user,
+                    question=question,
+                    response=output_response,
+                    action=str(
+                        audit_event.get("action")
+                        or output_response.get("v3_takeover_action")
+                        or output_response.get("action")
+                        or ""
+                    ),
+                    route_label=route_label,
+                    effective_conversation_id=(
+                        effective_conversation_id
+                    ),
+                    record_source=record_source,
+                )
+                audit_event["context_recorded"] = True
+                audit_event["followup_context_store_path"] = (
+                    store_result.get("path")
+                )
+                audit_event["followup_context_store_turn_count"] = (
+                    store_result.get("turn_count")
+                )
+                audit_event["followup_context_store_deduplicated"] = (
+                    store_result.get("deduplicated")
+                )
+                audit_event["followup_context_turn_fingerprint"] = (
+                    store_result.get("turn_fingerprint")
+                )
+
+                if isinstance(output_response, dict):
+                    safe_output = dict(output_response)
+                    safe_output[
+                        "v3_followup_context_recorded"
+                    ] = True
+                    safe_output[
+                        "v3_followup_context_record_source"
+                    ] = record_source
+                    safe_output[
+                        "v3_followup_context_store_turn_count"
+                    ] = store_result.get("turn_count")
+                    safe_output[
+                        "v3_followup_context_store_deduplicated"
+                    ] = store_result.get("deduplicated")
+                    return safe_output
+                return output_response
+            except Exception as context_exc:
+                context_error = repr(context_exc)
+                audit_event["followup_context_store_error"] = (
+                    context_error
+                )
+                if isinstance(output_response, dict):
+                    safe_output = dict(output_response)
+                    safe_output[
+                        "v3_followup_context_store_error"
+                    ] = context_error
+                    return safe_output
+                return output_response
 
         def _finish(reason, output_response, **extra):
             audit_event.update(extra)
             audit_event["reason"] = reason
+            final_output = _record_return_context(
+                output_response,
+                reason,
+            )
             audit_error = ""
             if should_audit:
                 audit_error = _v3_canary_write_audit(audit_event)
-            if audit_error and isinstance(output_response, dict):
-                safe_output = dict(output_response)
+            if audit_error and isinstance(final_output, dict):
+                safe_output = dict(final_output)
                 safe_output["v3_audit_error"] = audit_error
                 return safe_output
-            return output_response
+            return final_output
 
         if not allowed_users or user not in allowed_users:
             return _finish("user_not_allowed", response)
-        if not allowed_prefixes or not any(conversation_id.startswith(prefix) for prefix in allowed_prefixes):
+        if not allowed_prefixes or not any(
+            conversation_id.startswith(prefix)
+            for prefix in allowed_prefixes
+        ):
             return _finish("conversation_prefix_not_allowed", response)
 
-        shadow_state, shadow_source, rejected_candidates = _v3_canary_extract_existing_shadow_state(
-            local_context
+        context_record_enabled = True
+
+        shadow_state, shadow_source, rejected_candidates = (
+            _v3_canary_extract_existing_shadow_state(local_context)
         )
         audit_event["arbiter_state_rejected_candidates"] = rejected_candidates
         audit_event["arbiter_state_rejected_count"] = len(rejected_candidates)
 
         shadow_error = ""
         if not shadow_state:
-            shadow_state, shadow_source, shadow_error = _v3_canary_build_shadow_state(
-                question, user, conversation_id, local_context
+            shadow_state, shadow_source, shadow_error = (
+                _v3_canary_build_shadow_state(
+                    question,
+                    user,
+                    conversation_id,
+                    local_context,
+                )
             )
         audit_event["arbiter_state_source"] = shadow_source or "missing"
         if shadow_error:
@@ -763,28 +963,104 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             return _finish("arbiter_plan_decision_missing", response)
 
         raw_action, action_source = _v3_canary_arbiter_action(plan, decision)
-        plan, decision, action = _v3_canary_normalize_plan_decision(plan, decision, raw_action)
+        plan, decision, action = _v3_canary_normalize_plan_decision(
+            plan,
+            decision,
+            raw_action,
+        )
         audit_event["action"] = action
         audit_event["action_source"] = action_source
         if not action:
             return _finish("arbiter_action_missing", response)
 
-        stage_allowed_actions = {"general_chat", "advice_analysis"}
+        stage_allowed_actions = {
+            "general_chat",
+            "advice_analysis",
+            "analyze_existing_evidence",
+        }
+        stage_blocked_actions = {
+            "generate_commands",
+            "execute_provided_commands",
+            "execute_provided_commands_and_analyze",
+            "confirm_execute_pending",
+            "blocked_unsafe_commands",
+        }
         if action not in stage_allowed_actions:
-            return _finish("arbiter_action_not_v3_4_3_text_advice", response)
+            return _finish(
+                "arbiter_action_not_v3_4_4_followup_scope",
+                response,
+            )
 
-        if allowed_actions and "*" not in allowed_actions and action not in allowed_actions:
-            return _finish("action_not_allowed", response, allowed_actions=sorted(allowed_actions))
+        if (
+            allowed_actions
+            and "*" not in allowed_actions
+            and action not in allowed_actions
+        ):
+            return _finish(
+                "action_not_allowed",
+                response,
+                allowed_actions=sorted(allowed_actions),
+            )
+
+        from netaiops_asset.chat_v3.followup_context import (
+            build_followup_context,
+        )
+
+        followup_context = _v3_canary_as_dict(
+            shadow_state.get("followup_context")
+        )
+        if not followup_context:
+            followup_context = build_followup_context(
+                conversation_id=conversation_id,
+                user=user,
+            )
+        followup_context = (
+            followup_context
+            if isinstance(followup_context, dict)
+            else {}
+        )
+
+        context_available = bool(followup_context.get("available"))
+        context_source = str(followup_context.get("source") or "none")
+        context_turn_count = int(followup_context.get("turn_count") or 0)
+        context_topic = followup_context.get("topic")
+        context_has_execution_evidence = bool(
+            followup_context.get("has_execution_evidence")
+        )
+        audit_event.update(
+            {
+                "followup_context_source": context_source,
+                "followup_context_available": context_available,
+                "followup_context_turn_count": context_turn_count,
+                "followup_context_topic": context_topic,
+                "followup_context_has_execution_evidence": (
+                    context_has_execution_evidence
+                ),
+            }
+        )
+
+        if action == "analyze_existing_evidence" and not context_available:
+            return _finish(
+                "followup_context_unavailable",
+                response,
+            )
 
         confidence = _v3_canary_effective_confidence(plan, decision)
         audit_event["confidence"] = confidence
         audit_event["min_confidence"] = min_confidence
         if confidence < min_confidence:
-            return _finish("arbiter_confidence_below_threshold", response)
+            return _finish(
+                "arbiter_confidence_below_threshold",
+                response,
+            )
 
-        from netaiops_asset.chat_v3.response_generator import generate_v3_response
+        from netaiops_asset.chat_v3.response_generator import (
+            generate_v3_response,
+        )
         from netaiops_asset.chat_v3.takeover_gate import evaluate_takeover
-        from netaiops_asset.chat_v3.takeover_response import evaluate_response_readiness
+        from netaiops_asset.chat_v3.takeover_response import (
+            evaluate_response_readiness,
+        )
 
         gate = evaluate_takeover(
             plan=plan,
@@ -792,19 +1068,36 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             enabled=True,
             min_confidence=min_confidence,
             allowed=stage_allowed_actions,
+            blocked=stage_blocked_actions,
         ).as_dict()
         audit_event["gate"] = gate
-        if gate.get("takeover") is not True and gate.get("eligible") is not True:
-            return _finish("takeover_gate_not_eligible", response)
+        if (
+            gate.get("takeover") is not True
+            and gate.get("eligible") is not True
+        ):
+            return _finish(
+                "takeover_gate_not_eligible",
+                response,
+            )
 
         context = {
             "question": question,
             "route_label": route_label,
             "v2_response": response,
-            "v3_4_3": {
+            "followup_context": (
+                followup_context.get("generator_context") or {}
+            ),
+            "v3_4_4": {
                 "intent_source": "llm_intent_arbiter",
-                "arbiter_state_source": audit_event["arbiter_state_source"],
-                "convergence_scope": "general_chat/advice_analysis",
+                "arbiter_state_source": audit_event[
+                    "arbiter_state_source"
+                ],
+                "convergence_scope": (
+                    "general_chat/advice_analysis/"
+                    "analyze_existing_evidence"
+                ),
+                "original_conversation_id": conversation_id,
+                "effective_conversation_id": effective_conversation_id,
             },
         }
 
@@ -815,18 +1108,29 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
             decision=decision,
             context=context,
             gate=gate,
-            allow_live_llm=_v3_canary_env_bool("NETAIOPS_V3_RESPONSE_GENERATOR_LIVE_LLM", "0"),
+            allow_live_llm=_v3_canary_env_bool(
+                "NETAIOPS_V3_RESPONSE_GENERATOR_LIVE_LLM",
+                "0",
+            ),
         ).as_dict()
         audit_event["generator_ready"] = generated.get("ready")
         audit_event["generator_source"] = generated.get("source")
         audit_event["generator_reason"] = generated.get("reason")
 
         if generated.get("ready") is not True:
-            return _finish("generator_not_ready", response)
+            return _finish(
+                "generator_not_ready",
+                response,
+            )
 
         source = str(generated.get("source") or "")
         if allowed_sources and source not in allowed_sources:
-            return _finish("source_not_allowed", response, source=source, allowed_sources=sorted(allowed_sources))
+            return _finish(
+                "source_not_allowed",
+                response,
+                source=source,
+                allowed_sources=sorted(allowed_sources),
+            )
 
         answer = str(generated.get("answer") or "").strip()
         if not answer:
@@ -834,17 +1138,31 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
 
         plan_after = dict(plan or {})
         plan_after["answer"] = answer
-        readiness = evaluate_response_readiness(plan=plan_after, decision=decision, gate=gate).as_dict()
+        readiness = evaluate_response_readiness(
+            plan=plan_after,
+            decision=decision,
+            gate=gate,
+            context=context,
+        ).as_dict()
         audit_event["readiness_ready"] = readiness.get("ready")
         audit_event["readiness_reason"] = readiness.get("reason")
         if readiness.get("ready") is not True:
-            return _finish("readiness_not_ready", response)
+            return _finish(
+                "readiness_not_ready",
+                response,
+            )
 
         shadow_write_error = ""
-        if audit_event["arbiter_state_source"] == "rebuilt_in_takeover_wrapper":
+        if audit_event["arbiter_state_source"] == (
+            "rebuilt_in_takeover_wrapper"
+        ):
             shadow_write_error = _v3_canary_optional_shadow_write(
-                shadow_state, question, user, conversation_id,
-                f"v3_4_3_r6_rebuilt_{route_label}", response
+                shadow_state,
+                question,
+                user,
+                conversation_id,
+                f"v3_4_4_2_rebuilt_{route_label}",
+                response,
             )
         if shadow_write_error:
             audit_event["shadow_write_error"] = shadow_write_error
@@ -859,11 +1177,27 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
         mutated["v3_takeover_action"] = action
         mutated["v3_takeover_source"] = source
         mutated["v3_takeover_route_label"] = route_label
-        mutated["v3_takeover_reason"] = "v3_4_3_preflight_arbiter_rebuild_text_advice_convergence"
-        mutated["v3_arbiter_state_source"] = audit_event["arbiter_state_source"]
+        mutated["v3_takeover_reason"] = (
+            "v3_4_4_2_followup_context_arbiter_convergence"
+        )
+        mutated["v3_arbiter_state_source"] = audit_event[
+            "arbiter_state_source"
+        ]
+        mutated["v3_original_conversation_id"] = conversation_id
+        mutated["v3_effective_conversation_id"] = (
+            effective_conversation_id
+        )
+        mutated["v3_followup_context_available"] = context_available
+        mutated["v3_followup_context_source"] = context_source
+        mutated["v3_followup_context_turn_count"] = context_turn_count
+
         audit_event["taken"] = True
         audit_event["answer_len"] = len(answer)
-        return _finish("taken", mutated, source=source)
+        return _finish(
+            "taken",
+            mutated,
+            source=source,
+        )
     except Exception as exc:
         audit_event["reason"] = "exception"
         audit_event["error"] = repr(exc)
@@ -877,7 +1211,9 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
         return response
 
 
-# V3_4_3_PREFLIGHT_ARB_REBUILD_TEXT_ADVICE_R6_MARKER_END
+
+
+# V3_4_4_2_FOLLOWUP_CONTEXT_ARBITER_CONVERGENCE_MARKER_END
 # V3_ROUTE_RETURN_CANARY_MARKER_END
 
 

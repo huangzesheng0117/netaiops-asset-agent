@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 SAFE_TAKEOVER_ACTIONS = {
     "general_chat",
     "advice_analysis",
+    "analyze_existing_evidence",
     "need_clarification",
     "cmdb_query",
 }

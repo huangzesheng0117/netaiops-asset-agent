@@ -30,6 +30,7 @@ from netaiops_asset.chat_v3.takeover_response import (
 SAFE_RESPONSE_ACTIONS = {
     "general_chat",
     "advice_analysis",
+    "analyze_existing_evidence",
     "need_clarification",
     "cmdb_query",
 }
@@ -39,7 +40,6 @@ BLOCKED_ACTIONS = {
     "execute_provided_commands",
     "execute_provided_commands_and_analyze",
     "confirm_execute_pending",
-    "analyze_existing_evidence",
     "blocked_unsafe_commands",
 }
 
@@ -201,15 +201,34 @@ def _extract_field_labels(plan: Dict[str, Any], context: Dict[str, Any]) -> Dict
     return {}
 
 
-def build_response_messages(action: str, question: str, plan: Dict[str, Any], decision: Dict[str, Any]) -> List[Dict[str, str]]:
-    intent_reason = str(plan.get("reason") or decision.get("reason") or "").strip()
+def build_response_messages(
+    action: str,
+    question: str,
+    plan: Dict[str, Any],
+    decision: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, str]]:
+    intent_reason = str(
+        plan.get("reason") or decision.get("reason") or ""
+    ).strip()
+    context_dict = _as_dict(context)
+    followup_context = _as_dict(context_dict.get("followup_context"))
+
     base_system = (
         "你是 NetAIOps 网络运维助手。请输出可直接展示给用户的中文回答。"
         "不要输出 JSON；不要编造查询结果；不要生成设备配置或危险命令；"
         "如果用户要求纯文本解释或建议，就直接给出解释或建议。"
     )
 
-    if action == "advice_analysis":
+    if action == "analyze_existing_evidence":
+        system = (
+            base_system
+            + " 这是基于既有会话上下文继续分析的 follow-up 请求。"
+            + "只能使用提供的上下文，不得声称执行了新命令、查询了新设备或获得了新证据。"
+            + "请明确区分已有事实、推断和仍缺失的信息；"
+            + "如果上下文不足，必须明确说明不足，不能补造上一轮内容。"
+        )
+    elif action == "advice_analysis":
         system = (
             base_system
             + " 这是运维建议类问题。请给出明确结论、理由和风险提醒；"
@@ -225,10 +244,23 @@ def build_response_messages(action: str, question: str, plan: Dict[str, Any], de
     if intent_reason:
         user_parts.append(f"V3 意图判断备注：{intent_reason}")
 
+    if action == "analyze_existing_evidence":
+        context_payload = json.dumps(
+            followup_context,
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        )[:16000]
+        user_parts.append(
+            "可使用的既有会话上下文："
+            + (context_payload or "无")
+        )
+
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": "\n".join(user_parts)},
     ]
+
 
 
 def _parse_llm_answer(result: Dict[str, Any]) -> str:
@@ -438,6 +470,19 @@ def generate_v3_response(
             readiness=readiness,
         )
 
+    if action == "analyze_existing_evidence" or handler_key == "analyze_existing_evidence":
+        followup_context = _as_dict(context_dict.get("followup_context"))
+        if not bool(followup_context.get("followup_context_available")):
+            return _result(
+                generated=False,
+                ready=False,
+                reason="missing_followup_context",
+                action=action,
+                handler_key=handler_key,
+                response_mode=response_mode,
+                gate=gate_dict,
+            )
+
     existing_answer = extract_frontend_answer(plan_dict, decision_dict, context_dict)
     if existing_answer:
         enriched_plan = {**plan_dict, "answer": existing_answer}
@@ -467,7 +512,13 @@ def generate_v3_response(
             gate=gate_dict,
         )
 
-    messages = build_response_messages(action, question, plan_dict, decision_dict)
+    messages = build_response_messages(
+        action,
+        question,
+        plan_dict,
+        decision_dict,
+        context=context_dict,
+    )
     llm_result = _call_llm(messages, llm_client=llm_client, timeout=llm_timeout)
     llm_status = str(llm_result.get("status") or "")
     answer = _parse_llm_answer(llm_result)

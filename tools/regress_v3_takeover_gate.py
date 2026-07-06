@@ -63,8 +63,19 @@ def main() -> int:
     gate = evaluate_takeover(plan=base_plan(action="generate_commands", handler_key="generate_commands"), enabled=True)
     assert_case("generate_commands_blocked", gate.takeover is False and gate.reason == "blocked_action", gate.as_dict())
 
-    gate = evaluate_takeover(plan=base_plan(action="analyze_existing_evidence", handler_key="analyze_existing_evidence"), enabled=True)
-    assert_case("analyze_existing_evidence_blocked_in_v331", gate.takeover is False and gate.reason == "blocked_action", gate.as_dict())
+    gate = evaluate_takeover(
+        plan=base_plan(
+            action="analyze_existing_evidence",
+            handler_key="analyze_existing_evidence",
+            response_mode="analysis",
+        ),
+        enabled=True,
+    )
+    assert_case(
+        "analyze_existing_evidence_allowed_in_v344",
+        gate.takeover is True and gate.reason == "eligible",
+        gate.as_dict(),
+    )
 
     gate = evaluate_takeover(plan=base_plan(requires_confirmation=True), enabled=True)
     assert_case("requires_confirmation_blocked", gate.takeover is False and gate.reason == "requires_confirmation", gate.as_dict())

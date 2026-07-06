@@ -25,6 +25,7 @@ DEFAULT_MIN_EFFECTIVE_CONFIDENCE = 0.80
 DEFAULT_ALLOWED_ACTIONS: Set[str] = {
     "general_chat",
     "advice_analysis",
+    "analyze_existing_evidence",
     "need_clarification",
     "cmdb_query",
 }
@@ -34,13 +35,13 @@ DEFAULT_BLOCKED_ACTIONS: Set[str] = {
     "execute_provided_commands",
     "execute_provided_commands_and_analyze",
     "confirm_execute_pending",
-    "analyze_existing_evidence",
     "blocked_unsafe_commands",
 }
 
 DEFAULT_ALLOWED_RESPONSE_MODES: Set[str] = {
     "chat",
     "advice",
+    "analysis",
     "clarification",
     "cmdb",
 }
