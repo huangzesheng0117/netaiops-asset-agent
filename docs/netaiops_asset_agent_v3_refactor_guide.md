@@ -729,35 +729,51 @@ Legacy Route Registry 不能实现成本地关键词分类器。
 
 ---
 
-## 16. 当前下一步建议
+## 16. 当前状态与下一步
 
-当前应优先执行：
+当前确认状态：
 
 ```text
-V3.4-2-fix
+V3.1：已完成
+V3.2：已完成
+V3.3：canary takeover 技术闭环已完成并 closeout
+V3.4.1：已完成
+V3.4.2：metadata-only Legacy Route Registry 已完成
+V3.4.3：general_chat / advice_analysis 收敛已完成
+V3.4.4：follow-up context convergence 已完成
+V3.4.4 Closeout-1：基线审计与文档封存已完成
+V3.4.4 Closeout-2：待执行
+V4：尚未开始实施
+```
+
+原规划中的 V3.4.5、V3.4.6、V3.5 和 V3.6 未完成内容统一转入 V4，
+以后续 `09_V4_IMPLEMENTATION_PLAN.md` 对应的生产项目实施文档为准。
+
+当前下一步只能是：
+
+```text
+V3.4.4 Closeout-2
 ```
 
 目标：
 
-1. 保留 `legacy_route_registry.py` 模块名；
-2. 删除自然语言关键词分类逻辑；
-3. 删除 `CATEGORY_TOKENS`；
-4. 删除 `classify_legacy_route(question=...)` 这类入口；
-5. 改为只接受显式 legacy route descriptor；
-6. 更新 `tools/v3_4_2_legacy_route_registry_check.py`；
-7. 更新 `docs/v3_4_2_legacy_route_registry.md`；
-8. 增加测试，确保 registry 不会因为“执行 / 管理IP / 继续 / shutdown”等自然语言关键词做 route_type 判断；
-9. 不修改 app.py；
-10. 不重启服务；
-11. commit + push。
+1. 精确暂存 V3.4.4 closeout 文档；
+2. `git diff --cached --check`；
+3. commit；
+4. push `origin main`；
+5. 使用 `git ls-remote` 核验真实远端 SHA；
+6. 创建并推送 `chatbot-v3.4.4-closeout`；
+7. 核验远端 tag；
+8. 确认工作区 clean。
 
-完成后才能进入：
+V3.4.4 closeout 完成后，才能进入：
 
 ```text
-V3.4-3：收敛 general_chat / advice_analysis 类旧分支
+V4.1-1：GLM 5.2 生产配置与接口只读取证
 ```
 
----
+Closeout-1 不修改 `app.py`、V2/V3 运行时代码、systemd 或生产配置，
+不重启服务，也不改变线上行为。
 
 ## 17. 最终原则
 

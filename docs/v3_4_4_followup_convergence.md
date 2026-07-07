@@ -174,3 +174,51 @@ peer=netaiops:netaiops 644
 真实双轮 API takeover、audit、commit 和 push 闭环。
 
 权限修复不参与用户意图判断，不改变 LLM Intent Arbiter 主路由边界。
+
+## V3.4.4 Closeout-1：基线审计与文档封存
+
+执行时间：
+
+```text
+2026-07-07T16:12:44+08:00
+```
+
+本批对 V3.4.4 当前基线进行了只读运行状态、Git 远端、运行时权限、
+离线回归和文档状态审计，并新增独立 closeout 文档。
+
+确认结果：
+
+```text
+local_head=1a3745bf5adce87845ee43dad72e3fd56cbb67f7
+remote_main_sha=1a3745bf5adce87845ee43dad72e3fd56cbb67f7
+service_active=OK
+health_http_code=200
+health_reported_llm_model=qwen3-max
+model_documentation_discrepancy=YES
+service_identity=netaiops:netaiops
+runtime_permission_probe=OK
+unreadable_v3_python_files_in_production=4
+regression_source_mode=git_archive_expected_HEAD
+v3_offline_regression=OK
+documentation_sealed=OK
+```
+
+模型状态说明：
+
+现网 `/health` 在本批报告模型为 `qwen3-max`，与项目知识文档中的 `glm-5.2` 存在差异。`/health` 只反映进程当前报告的配置字段，不能单独证明网关真实调用模型。该差异不属于V3.4.4 Closeout 阻断项，必须在 V4.1-1 通过生产配置、`/models`、`/probe` 和真实 Chat 重新取证。文档可能需要更新。
+
+本批没有修改 `app.py`、V2/V3 业务代码、systemd、生产配置或 takeover
+开关；没有重启服务，没有执行真实设备命令，没有调用真实 Chat/LLM
+业务场景，也没有 commit、push 或创建 tag。
+
+当前状态仍是：
+
+```text
+V3.4.4 功能完成
+Closeout-1 完成
+Closeout-2：待执行
+V4 尚未开始
+```
+
+下一步必须单独执行 V3.4.4 Closeout-2，完成 commit、push、远端 SHA
+核验和 `chatbot-v3.4.4-closeout` tag 后，才能进入 V4.1。
