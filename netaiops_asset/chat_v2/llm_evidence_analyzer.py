@@ -306,7 +306,14 @@ def _call_llm(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     cfg = _load_llm_config()
     chat_url = cfg.get("chat_url")
     api_key = cfg.get("api_key")
-    model = cfg.get("model") or "qwen3-max"
+    model = cfg.get("model")
+
+    if not model:
+        return {
+            "ok": False,
+            "error": "missing_model",
+            "safe_config": _safe_config(cfg),
+        }
 
     if not chat_url:
         return {
@@ -320,6 +327,10 @@ def _call_llm(messages: List[Dict[str, str]]) -> Dict[str, Any]:
         "messages": messages,
         "temperature": 0.1,
         "stream": False,
+        "max_tokens": max(
+            1200,
+            int(os.getenv("NETAIOPS_V2_EVIDENCE_LLM_MAX_TOKENS", "1200") or 1200),
+        ),
     }
 
     headers = {
@@ -553,7 +564,15 @@ def _call_llm(messages):
     cfg = _load_llm_config()
     chat_url = cfg.get("chat_url")
     api_key = cfg.get("api_key")
-    model = cfg.get("model") or "qwen3-max"
+    model = cfg.get("model")
+
+    if not model:
+        return {
+            "ok": False,
+            "error": "missing_model",
+            "safe_config": _safe_config(cfg),
+            "bootstrap_info": bootstrap_info,
+        }
 
     if not chat_url:
         return {
@@ -568,6 +587,10 @@ def _call_llm(messages):
         "messages": messages,
         "temperature": 0.1,
         "stream": False,
+        "max_tokens": max(
+            1200,
+            int(os.getenv("NETAIOPS_V2_EVIDENCE_LLM_MAX_TOKENS", "1200") or 1200),
+        ),
     }
 
     headers = {

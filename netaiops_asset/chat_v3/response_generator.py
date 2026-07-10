@@ -296,13 +296,15 @@ def _call_llm(messages: List[Dict[str, str]], llm_client: Any = None, timeout: i
         }
 
     try:
+        configured_max_tokens = int(getattr(client, "max_tokens", 0) or 0)
+        response_max_tokens = max(1200, configured_max_tokens)
         return client.chat(
             messages,
-            max_tokens=900,
+            max_tokens=response_max_tokens,
             temperature=0,
             top_p=None,
             response_format=False,
-            thinking=False,
+            thinking={"type": "disabled"},
             timeout=timeout,
         )
     except TypeError:

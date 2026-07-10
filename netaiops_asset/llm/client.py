@@ -281,24 +281,92 @@ class LLMClient:
 
                         break
 
-                    content = ""
-                    try:
-                        content = data["choices"][0]["message"]["content"]
-                    except Exception:
-                        content = ""
+                    requested_model = str(payload.get("model") or "")
+                    max_tokens_used = payload.get(self.max_tokens_param)
+                    reported_model = data.get("model") if isinstance(data, dict) else None
+                    choices = data.get("choices") if isinstance(data, dict) else None
+
+                    if not isinstance(choices, list) or not choices:
+                        last_error = {
+                            "status": "error",
+                            "error_code": "LLM_EMPTY_CHOICES",
+                            "http_status": resp.status_code,
+                            "latency_ms": latency_ms,
+                            "message": "LLM response choices is empty",
+                            "headers": headers,
+                            "base_url_used": base_url,
+                            "requested_model": requested_model,
+                            "reported_model": reported_model,
+                            "finish_reason": None,
+                            "max_tokens_used": max_tokens_used,
+                            "content_length": 0,
+                            "raw_choices_count": 0,
+                            "config": self.masked_config(),
+                        }
+                        break
+
+                    first_choice = choices[0] if isinstance(choices[0], dict) else {}
+                    finish_reason = first_choice.get("finish_reason")
+                    message = first_choice.get("message")
+
+                    if not isinstance(message, dict):
+                        last_error = {
+                            "status": "error",
+                            "error_code": "LLM_EMPTY_MESSAGE",
+                            "http_status": resp.status_code,
+                            "latency_ms": latency_ms,
+                            "message": "LLM response message is missing",
+                            "headers": headers,
+                            "base_url_used": base_url,
+                            "requested_model": requested_model,
+                            "reported_model": reported_model,
+                            "finish_reason": finish_reason,
+                            "max_tokens_used": max_tokens_used,
+                            "content_length": 0,
+                            "raw_choices_count": len(choices),
+                            "config": self.masked_config(),
+                        }
+                        break
+
+                    raw_content = message.get("content")
+                    content = raw_content.strip() if isinstance(raw_content, str) else ""
+
+                    if not content:
+                        last_error = {
+                            "status": "error",
+                            "error_code": "LLM_EMPTY_CONTENT",
+                            "http_status": resp.status_code,
+                            "latency_ms": latency_ms,
+                            "message": "LLM response message.content is empty",
+                            "headers": headers,
+                            "base_url_used": base_url,
+                            "requested_model": requested_model,
+                            "reported_model": reported_model,
+                            "finish_reason": finish_reason,
+                            "max_tokens_used": max_tokens_used,
+                            "content_length": 0,
+                            "raw_choices_count": len(choices),
+                            "config": self.masked_config(),
+                        }
+                        break
 
                     return {
                         "status": "ok",
                         "http_status": resp.status_code,
                         "latency_ms": latency_ms,
-                        "model": payload["model"],
+                        "model": requested_model,
+                        "requested_model": requested_model,
+                        "reported_model": reported_model,
+                        "finish_reason": finish_reason,
+                        "max_tokens_used": max_tokens_used,
                         "content": content,
+                        "content_length": len(content),
                         "usage": data.get("usage") if isinstance(data, dict) else None,
                         "headers": headers,
                         "base_url_used": base_url,
                         "retry_attempts": attempt,
                         "fallback_index": base_idx,
-                        "raw_choices_count": len(data.get("choices", [])) if isinstance(data, dict) else 0,
+                        "raw_choices_count": len(choices),
                     }
 
                 except requests.Timeout as exc:
@@ -334,11 +402,11 @@ class LLMClient:
                 {"role": "system", "content": "你是连通性测试助手。"},
                 {"role": "user", "content": "请只回复 OK。"},
             ],
-            max_tokens=32,
+            max_tokens=max(1200, self.max_tokens),
             temperature=0,
             top_p=None,
             response_format=False,
-            thinking=False,
+            thinking={"type": "disabled"},
         )
         result["config"] = self.masked_config()
         if result.get("status") == "ok":

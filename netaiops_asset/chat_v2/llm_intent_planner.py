@@ -359,6 +359,7 @@ def _call_llm_planner(question: str, context: Optional[Dict[str, Any]], user: Op
         "messages": messages,
         "temperature": 0,
         "stream": False,
+        "max_tokens": int(cfg.get("max_tokens") or 1200),
         "response_format": {"type": "json_object"},
     }
 
@@ -388,6 +389,13 @@ def _call_llm_planner(question: str, context: Optional[Dict[str, Any]], user: Op
     data["ok"] = True
     data["source"] = "llm"
     data["raw_content"] = content[:2000]
+    data["llm_observability"] = {
+        "requested_model": first.get("requested_model"),
+        "reported_model": first.get("reported_model"),
+        "finish_reason": first.get("finish_reason"),
+        "max_tokens_used": first.get("max_tokens_used"),
+        "content_length": len(content.strip()),
+    }
     return data
 
 
@@ -516,8 +524,12 @@ def _load_llm_config() -> Dict[str, Any]:
         cfg["chat_url"] = _to_chat_completions_url(str(cfg["base_url"]).strip())
 
     if not cfg.get("model"):
-        cfg["model"] = "qwen3-max"
+        cfg["model_error"] = "missing_model"
 
+    cfg["max_tokens"] = max(
+        1200,
+        int(os.getenv("NETAIOPS_V2_PLANNER_LLM_MAX_TOKENS", "1200") or 1200),
+    )
     cfg["timeout"] = int(os.getenv("NETAIOPS_LLM_PLANNER_TIMEOUT", "45"))
     return cfg
 
@@ -601,10 +613,27 @@ def _post_chat_completion(cfg: Dict[str, Any], payload: Dict[str, Any]) -> Dict[
     try:
         with urllib.request.urlopen(req, timeout=int(cfg.get("timeout") or 45)) as resp:
             body = resp.read().decode("utf-8", errors="replace")
+            response_data = json.loads(body)
+            choices = response_data.get("choices") if isinstance(response_data, dict) else None
+            first_choice = (
+                choices[0]
+                if isinstance(choices, list)
+                and choices
+                and isinstance(choices[0], dict)
+                else {}
+            )
             return {
                 "ok": True,
                 "status_code": resp.status,
-                "response": json.loads(body),
+                "response": response_data,
+                "requested_model": payload.get("model"),
+                "reported_model": (
+                    response_data.get("model")
+                    if isinstance(response_data, dict)
+                    else None
+                ),
+                "finish_reason": first_choice.get("finish_reason"),
+                "max_tokens_used": payload.get("max_tokens"),
             }
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -944,9 +973,12 @@ def _load_llm_config():
         cfg["chat_url"] = _to_chat_completions_url(str(cfg["base_url"]).strip())
 
     if not cfg.get("model"):
-        cfg["model"] = "qwen3-max"
-        sources["model"] = "default:qwen3-max"
+        sources["model"] = "missing"
 
+    cfg["max_tokens"] = max(
+        1200,
+        int(os.getenv("NETAIOPS_V2_PLANNER_LLM_MAX_TOKENS", "1200") or 1200),
+    )
     cfg["timeout"] = int(os.getenv("NETAIOPS_LLM_PLANNER_TIMEOUT", "45"))
     cfg["_debug_sources"] = sources
     return cfg

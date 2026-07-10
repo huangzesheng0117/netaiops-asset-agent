@@ -3283,7 +3283,7 @@ def _batch67_is_advice_analysis_question(question):
         "隔离流量",
     ]
 
-    return explicit_no_command or _batch67_contains_any(q, advice_keywords)
+    return _batch67_contains_any(q, advice_keywords)
 
 
 def _batch67_compact_context(context):
@@ -3349,13 +3349,22 @@ def _batch67_call_local_llm_for_advice(question, context):
     ]
 
     try:
-        from netaiops_asset.chat_v2.llm_evidence_analyzer import _call_llm
-        result = _call_llm(messages)
+        client = LLMClient()
+        configured_max_tokens = int(getattr(client, "max_tokens", 0) or 0)
+        result = client.chat(
+            messages,
+            max_tokens=max(1200, configured_max_tokens),
+            temperature=0,
+            top_p=None,
+            response_format=False,
+            thinking={"type": "disabled"},
+        )
     except Exception as exc:
         return {
             "ok": False,
             "error": "local_llm_call_exception: %r" % (exc,),
             "content": "",
+            "observability": {},
         }
 
     if not isinstance(result, dict):
@@ -3363,36 +3372,48 @@ def _batch67_call_local_llm_for_advice(question, context):
             "ok": False,
             "error": "local_llm_return_not_dict: %r" % (type(result).__name__,),
             "content": "",
+            "observability": {},
         }
 
-    if result.get("ok") is False:
+    observability = {
+        "status": result.get("status"),
+        "error_code": result.get("error_code"),
+        "http_status": result.get("http_status"),
+        "requested_model": result.get("requested_model") or result.get("model"),
+        "reported_model": result.get("reported_model"),
+        "finish_reason": result.get("finish_reason"),
+        "max_tokens_used": result.get("max_tokens_used"),
+        "content_length": result.get("content_length"),
+        "latency_ms": result.get("latency_ms"),
+        "base_url_used": result.get("base_url_used"),
+    }
+
+    if result.get("status") != "ok":
         return {
             "ok": False,
-            "error": result.get("error") or result.get("message") or "local_llm_failed",
+            "error": (
+                result.get("error_code")
+                or result.get("message")
+                or result.get("error")
+                or "local_llm_failed"
+            ),
             "content": "",
-            "raw": result,
+            "observability": observability,
         }
 
-    content = (
-        result.get("content")
-        or result.get("answer")
-        or result.get("text")
-        or result.get("message")
-        or ""
-    )
-
-    if not str(content).strip():
+    content = str(result.get("content") or "").strip()
+    if not content:
         return {
             "ok": False,
             "error": "local_llm_empty_content",
             "content": "",
-            "raw": result,
+            "observability": observability,
         }
 
     return {
         "ok": True,
-        "content": str(content).strip(),
-        "raw": result,
+        "content": content,
+        "observability": observability,
     }
 
 
@@ -3495,6 +3516,7 @@ def _batch67_try_handle_advice_analysis(_locals):
                 "batch67_advice_analysis": True,
                 "no_command_generation": True,
                 "no_device_execution": True,
+                "llm_observability": llm_result.get("observability") or {},
                 "context_device": context.get("current_device") if isinstance(context, dict) else None,
             },
         }
@@ -3519,6 +3541,7 @@ def _batch67_try_handle_advice_analysis(_locals):
                 "no_command_generation": True,
                 "no_device_execution": True,
                 "llm_error": llm_result.get("error"),
+                "llm_observability": llm_result.get("observability") or {},
             },
         }
 
