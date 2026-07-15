@@ -464,5 +464,64 @@ class V4LowRiskDispatcherTests(unittest.TestCase):
             )
 
 
+    def test_empty_question_need_clarification_full_transaction(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            llm = FakeLLM()
+            dispatcher = self._dispatcher(
+                root / "context",
+                root / "audit",
+                llm=llm,
+            )
+            result = dispatcher.dispatch(
+                question="",
+                conversation_id="conv-dispatch-empty-clarification",
+                request_id="req-dispatch-empty-clarification",
+                request_user_field="v4_2_3_test",
+                decision=self._decision(IntentAction.need_clarification),
+            )
+            self.assertEqual(result.status, EntryStatus.clarification)
+            self.assertEqual(
+                result.action,
+                IntentAction.need_clarification,
+            )
+            self.assertEqual(result.response.status, "need_clarification")
+            self.assertEqual(result.response.question, "")
+            self.assertTrue(result.response.answer.strip())
+            self.assertEqual(llm.calls, 0)
+            loaded = dispatcher.store.load(
+                "conv-dispatch-empty-clarification"
+            )
+            self.assertEqual(loaded.status, OperationStatus.ok)
+            self.assertEqual(len(loaded.context.recent_turns), 1)
+            self.assertEqual(loaded.context.recent_turns[0].question, "")
+            self.assertEqual(len(loaded.context.audit_refs), 1)
+
+    def test_empty_question_non_clarification_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            dispatcher = self._dispatcher(
+                root / "context",
+                root / "audit",
+            )
+            for action in (
+                IntentAction.general_chat,
+                IntentAction.advice_analysis,
+                IntentAction.cmdb_query,
+            ):
+                with self.subTest(action=action.value):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "question is required",
+                    ):
+                        dispatcher.dispatch(
+                            question="",
+                            conversation_id=f"conv-empty-{action.value}",
+                            request_id=f"req-empty-{action.value}",
+                            request_user_field="v4_2_3_test",
+                            decision=self._decision(action),
+                        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -199,29 +199,208 @@ def names_in(node: ast.AST) -> set[str]:
     return result
 
 
-def action_selection_uses_question(dispatch: ast.AST) -> bool:
-    question_names = {"question", "normalized_question"}
-    action_names = {
-        "action",
-        "intent",
-        "handlers",
-        "LOW_RISK_ACTIONS",
-        *EXPECTED_HANDLER_CLASSES,
-        *OUT_OF_SCOPE_ACTIONS,
-    }
-    for node in ast.walk(dispatch):
-        if not isinstance(node, (ast.If, ast.Match, ast.IfExp)):
-            continue
-        condition: ast.AST
-        if isinstance(node, ast.If):
-            condition = node.test
-        elif isinstance(node, ast.IfExp):
-            condition = node.test
-        else:
-            condition = node.subject
-        used = names_in(condition)
-        if used.intersection(question_names) and used.intersection(action_names):
+QUESTION_NAMES = {"question", "normalized_question"}
+ACTION_SELECTION_TARGET_NAMES = {
+    "action",
+    "selected_action",
+    "intent",
+    "decision",
+    "handler",
+    "selected_handler",
+    "handler_key",
+    "route",
+    "route_key",
+}
+ACTION_MAPPING_NAMES = {
+    "handlers",
+    "ROUTE_MAP",
+    "ACTION_MAP",
+    "HANDLER_MAP",
+    "route_map",
+    "action_map",
+    "handler_map",
+}
+ACTION_LITERAL_NAMES = {
+    *EXPECTED_HANDLER_CLASSES,
+    *OUT_OF_SCOPE_ACTIONS,
+}
+
+
+def target_names(node: ast.AST) -> set[str]:
+    result: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            result.add(child.id)
+        elif isinstance(child, ast.Attribute):
+            result.add(child.attr)
+    return result
+
+
+def uses_question(node: ast.AST) -> bool:
+    return bool(names_in(node).intersection(QUESTION_NAMES))
+
+
+def mapping_lookup_uses_question(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Subscript):
+            if (
+                target_names(child.value).intersection(ACTION_MAPPING_NAMES)
+                and uses_question(child.slice)
+            ):
+                return True
+        elif isinstance(child, ast.Call):
+            function_name = dotted_name(child.func)
+            if function_name == "IntentAction" and any(
+                uses_question(argument) for argument in child.args
+            ):
+                return True
+            if isinstance(child.func, ast.Attribute):
+                if (
+                    child.func.attr in {"get", "__getitem__"}
+                    and target_names(child.func.value).intersection(
+                        ACTION_MAPPING_NAMES
+                    )
+                    and any(uses_question(argument) for argument in child.args)
+                ):
+                    return True
+    return False
+
+
+def expression_is_action_selector(node: ast.AST) -> bool:
+    if intent_action_name(node):
+        return True
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value in ACTION_LITERAL_NAMES
+    if isinstance(node, ast.Subscript):
+        return bool(target_names(node.value).intersection(ACTION_MAPPING_NAMES))
+    if isinstance(node, ast.Name):
+        return node.id in {
+            "action",
+            "selected_action",
+            "handler",
+            "selected_handler",
+            "route",
+            "route_key",
+        }
+    if isinstance(node, ast.Attribute):
+        return node.attr in {
+            "action",
+            "handler",
+            "selected_handler",
+            "route",
+            "route_key",
+        }
+    if isinstance(node, ast.Call):
+        function_name = dotted_name(node.func)
+        if function_name == "IntentAction":
             return True
+        if function_name in EXPECTED_HANDLER_CLASSES.values():
+            return True
+        if any(
+            isinstance(child, ast.Subscript)
+            and target_names(child.value).intersection(ACTION_MAPPING_NAMES)
+            for child in ast.walk(node)
+        ):
+            return True
+        if any(
+            isinstance(child, (ast.Name, ast.Attribute))
+            and (
+                getattr(child, "id", "") in {"handler", "selected_handler"}
+                or getattr(child, "attr", "")
+                in {"handler", "selected_handler"}
+            )
+            for child in ast.walk(node.func)
+        ):
+            return True
+    return False
+
+
+def assignment_selects_action_from_question(node: ast.AST) -> bool:
+    if isinstance(node, ast.Assign):
+        targets = list(node.targets)
+        value = node.value
+    elif isinstance(node, ast.AnnAssign):
+        targets = [node.target]
+        value = node.value
+    elif isinstance(node, ast.NamedExpr):
+        targets = [node.target]
+        value = node.value
+    else:
+        return False
+    if value is None:
+        return False
+    selected_targets: set[str] = set()
+    for target in targets:
+        selected_targets.update(target_names(target))
+    return bool(
+        selected_targets.intersection(ACTION_SELECTION_TARGET_NAMES)
+        and uses_question(value)
+    )
+
+
+def branch_selects_action(statements: Iterable[ast.stmt]) -> bool:
+    for statement in statements:
+        for node in ast.walk(statement):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                if isinstance(node, ast.Assign):
+                    targets = list(node.targets)
+                    value = node.value
+                elif isinstance(node, ast.AnnAssign):
+                    targets = [node.target]
+                    value = node.value
+                else:
+                    targets = [node.target]
+                    value = node.value
+                selected_targets: set[str] = set()
+                for target in targets:
+                    selected_targets.update(target_names(target))
+                if selected_targets.intersection(ACTION_SELECTION_TARGET_NAMES):
+                    return True
+                if value is not None and expression_is_action_selector(value):
+                    return True
+            elif isinstance(node, ast.Return):
+                if (
+                    node.value is not None
+                    and expression_is_action_selector(node.value)
+                ):
+                    return True
+            elif isinstance(node, ast.Expr):
+                if expression_is_action_selector(node.value):
+                    return True
+    return False
+
+
+def action_selection_uses_question(dispatch: ast.AST) -> bool:
+    for node in ast.walk(dispatch):
+        if mapping_lookup_uses_question(node):
+            return True
+        if assignment_selects_action_from_question(node):
+            return True
+        if isinstance(node, ast.If):
+            if uses_question(node.test) and (
+                branch_selects_action(node.body)
+                or branch_selects_action(node.orelse)
+            ):
+                return True
+        elif isinstance(node, ast.IfExp):
+            if uses_question(node.test) and (
+                expression_is_action_selector(node.body)
+                or expression_is_action_selector(node.orelse)
+            ):
+                return True
+        elif isinstance(node, ast.Match):
+            if uses_question(node.subject) and any(
+                branch_selects_action(case.body)
+                for case in node.cases
+            ):
+                return True
+        elif isinstance(node, ast.Return):
+            if (
+                node.value is not None
+                and uses_question(node.value)
+                and expression_is_action_selector(node.value)
+            ):
+                return True
     return False
 
 

@@ -196,14 +196,17 @@ class LowRiskActionDispatcher:
         normalized_request_id = str(request_id or "").strip()
         normalized_user = str(request_user_field or "").strip()
 
-        if not normalized_question:
+        intent = self._normalize_decision(decision)
+
+        if (
+            not normalized_question
+            and intent.action != IntentAction.need_clarification
+        ):
             raise ValueError("question is required")
         if not normalized_conversation_id:
             raise ValueError("conversation_id is required")
         if not normalized_request_id:
             raise ValueError("request_id is required")
-
-        intent = self._normalize_decision(decision)
 
         if intent.action not in LOW_RISK_ACTIONS:
             audit = build_audit_record(

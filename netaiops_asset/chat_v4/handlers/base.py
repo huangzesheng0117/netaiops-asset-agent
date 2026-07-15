@@ -27,7 +27,10 @@ class HandlerRequest:
     llm_client: Any = None
 
     def __post_init__(self) -> None:
-        if not str(self.question or "").strip():
+        if (
+            not str(self.question or "").strip()
+            and self.decision.action != IntentAction.need_clarification
+        ):
             raise ValueError("question is required")
         if not str(self.conversation_id or "").strip():
             raise ValueError("conversation_id is required")

@@ -1221,6 +1221,62 @@ def _v3_apply_chat_canary_takeover(response, local_context=None, route_label="")
 
 
 
+# V4_2_3_ENTRY_ROUTER_MARKER_BEGIN
+def _v4_try_pre_route(question, user, conversation_id):
+    try:
+        from netaiops_asset.chat_v4.app_bridge import (
+            build_v4_internal_error_transport,
+            try_handle_v4_pre_route,
+        )
+    except Exception as exc:
+        error = repr(exc)
+        try:
+            write_audit({
+                "user": user,
+                "question": str(question or ""),
+                "intent": "v4_entry_router_init_failed",
+                "tool_name": "v4_entry_router",
+                "tool_args": {"conversation_id": conversation_id},
+                "data_source": "v4_entry_router",
+                "result_count": 0,
+                "returned_count": 0,
+                "status": "failed",
+                "error": error,
+            })
+        except Exception:
+            pass
+        return {
+            "handled": False,
+            "response": None,
+            "shadow_state": {},
+            "route": {
+                "enabled": True,
+                "handled": False,
+                "fallback": True,
+                "reason": "v4_entry_router_init_failed",
+                "error": error,
+            },
+        }
+
+    try:
+        return try_handle_v4_pre_route(
+            question=str(question or ""),
+            request_user_field=str(user or ""),
+            conversation_id=str(conversation_id or ""),
+            get_conversation_fn=get_conversation,
+            create_conversation_fn=create_conversation,
+            append_turn_fn=append_turn,
+        )
+    except Exception as exc:
+        return build_v4_internal_error_transport(
+            question=str(question or ""),
+            request_user_field=str(user or ""),
+            conversation_id=str(conversation_id or ""),
+            detail=repr(exc),
+        )
+# V4_2_3_ENTRY_ROUTER_MARKER_END
+
+
 @app.middleware("http")
 async def v2_chat_router_middleware(request, call_next):
     v3_shadow_state = None
@@ -1234,12 +1290,23 @@ async def v2_chat_router_middleware(request, call_next):
             question = str(payload.get("question") or "").strip()
             user = payload.get("user")
             conversation_id = payload.get("conversation_id")
-            v3_shadow_state = _v3_shadow_build(
-                question=question,
-                user=user,
-                conversation_id=conversation_id,
-                payload=payload,
+            # V4_2_3_PRE_ROUTE_CALL_MARKER_BEGIN
+            v4_pre_route = _v4_try_pre_route(
+                question,
+                user,
+                conversation_id,
             )
+            if v4_pre_route.get("handled"):
+                return JSONResponse(v4_pre_route["response"])
+            v3_shadow_state = v4_pre_route.get("shadow_state")
+            if not v3_shadow_state:
+                v3_shadow_state = _v3_shadow_build(
+                    question=question,
+                    user=user,
+                    conversation_id=conversation_id,
+                    payload=payload,
+                )
+            # V4_2_3_PRE_ROUTE_CALL_MARKER_END
             if question:
                 # batch67_advice_analysis_route
                 batch67_advice_response = _batch67_try_handle_advice_analysis(locals())
