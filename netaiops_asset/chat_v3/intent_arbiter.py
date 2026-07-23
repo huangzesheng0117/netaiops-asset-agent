@@ -359,6 +359,8 @@ JSON schema:
   "should_execute_commands": false,
   "should_analyze_after_execution": false,
   "requires_confirmation": false,
+  "cmdb_query": {{"operation":"auto","keyword":"","filters":{{}},"fields":[],"ips":[],"page":1,"page_size":20}},
+  "command_generation": {{"category":"device_health","interface":"","max_commands":8}},
   "clarification_question": "",
   "reason": ""
 }}
@@ -374,6 +376,10 @@ JSON schema:
 8. 关键信息不足且无法从上下文继承时，是 need_clarification。
 9. 如果同一句话同时包含新命令和分析诉求，优先 execute_provided_commands_and_analyze，不要误判为 analyze_existing_evidence。
 10. 如果用户主动提供命令，requires_confirmation 必须为 false。
+11. cmdb_query 必须把操作、关键词、过滤器、字段、IP列表、分页写入 cmdb_query；不要把自然语言查询条件塞进 reason。
+12. generate_commands 必须把排障类别、接口和命令上限写入 command_generation；commands 保持为空，由确定性后端生成。
+13. 系统生成命令必须标记 command_source=system_generated 且 requires_confirmation=true；本阶段只生成和安全预检，不执行、不创建 pending。
+14. command_generation.category 只能是 device_health/cpu/memory/route_table/bgp/bfd/interface_status/interface_error/optical_power/log。
 """
 
     examples = """示例 1：
@@ -393,8 +399,12 @@ JSON schema:
 输出：{"schema_version":"v3_intent_arbiter_1","action":"advice_analysis","confidence":0.95,"device_required":false,"device_hint":"","commands_provided":false,"commands":[],"need_existing_evidence":false,"should_generate_commands":false,"should_execute_commands":false,"should_analyze_after_execution":false,"requires_confirmation":false,"clarification_question":"","reason":"用户明确要求方案建议和风险分析，不要命令"}
 
 示例 5：
-用户：查一下 SH16-H05-INT-EDG-SW01 的管理 IP 和设备类型
-输出：{"schema_version":"v3_intent_arbiter_1","action":"cmdb_query","confidence":0.94,"device_required":true,"device_hint":"SH16-H05-INT-EDG-SW01","commands_provided":false,"commands":[],"need_existing_evidence":false,"should_generate_commands":false,"should_execute_commands":false,"should_analyze_after_execution":false,"requires_confirmation":false,"clarification_question":"","reason":"用户只查询资产字段，不要求排障或执行命令"}"""
+用户：查一下 SH16-H05-INT-EDG-SW01 的管理 IP、设备型号、IDC 和机房
+输出：{"schema_version":"v3_intent_arbiter_1","action":"cmdb_query","confidence":0.94,"device_required":true,"device_hint":"SH16-H05-INT-EDG-SW01","commands_provided":false,"commands":[],"need_existing_evidence":false,"should_generate_commands":false,"should_execute_commands":false,"should_analyze_after_execution":false,"requires_confirmation":false,"cmdb_query":{"operation":"detail","keyword":"SH16-H05-INT-EDG-SW01","filters":{},"fields":["host_name","mgmt_ip","device_spec","IDC","server_room"],"ips":[],"page":1,"page_size":20},"command_generation":{"category":"device_health","interface":"","max_commands":8},"clarification_question":"","reason":"用户只查询结构化资产字段"}
+
+示例 6：
+用户：给我生成 SH16-H05-INT-EDG-SW01 的第一批 CPU 只读排查命令，只生成不要执行
+输出：{"schema_version":"v3_intent_arbiter_1","action":"generate_commands","confidence":0.95,"device_required":true,"device_hint":"SH16-H05-INT-EDG-SW01","commands_provided":false,"commands":[],"need_existing_evidence":false,"should_generate_commands":true,"should_execute_commands":false,"should_analyze_after_execution":false,"requires_confirmation":true,"cmdb_query":{"operation":"auto","keyword":"","filters":{},"fields":[],"ips":[],"page":1,"page_size":20},"command_generation":{"category":"cpu","interface":"","max_commands":8},"clarification_question":"","reason":"用户要求生成系统建议的只读 CPU 排查命令，不要求执行"}"""
 
     user_msg = "用户={}\n上下文摘要={}\n当前输入={}".format(
         user or "",
@@ -466,6 +476,29 @@ def normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         data["commands"] = [str(item).strip() for item in commands if str(item).strip()]
     else:
         data["commands"] = []
+
+
+    cmdb_query = data.get("cmdb_query")
+    if not isinstance(cmdb_query, dict):
+        cmdb_query = data.get("cmdb") if isinstance(data.get("cmdb"), dict) else {}
+    data["cmdb_query"] = dict(cmdb_query or {})
+
+    command_generation = data.get("command_generation")
+    if not isinstance(command_generation, dict):
+        command_generation = (
+            data.get("command_spec")
+            if isinstance(data.get("command_spec"), dict)
+            else {}
+        )
+    data["command_generation"] = dict(command_generation or {})
+
+    if data["action"] == IntentAction.generate_commands.value:
+        data["commands"] = []
+        data["commands_provided"] = False
+        data["should_generate_commands"] = True
+        data["should_execute_commands"] = False
+        data["should_analyze_after_execution"] = False
+        data["requires_confirmation"] = True
 
     data["schema_version"] = str(data.get("schema_version") or INTENT_SCHEMA_VERSION)
 

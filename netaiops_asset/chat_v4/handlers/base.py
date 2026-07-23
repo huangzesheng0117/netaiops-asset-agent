@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Shared request/outcome contracts for V4.2-2 low-risk handlers.
+"""Shared request/outcome contracts for V4.3-1 handlers.
 
-Handlers receive an already validated IntentDecision. They do not classify user
-text, query CMDB/MCP, or execute commands.
+Handlers receive an already validated IntentDecision and never classify user
+text. Dedicated V4.3-1 handlers may perform read-only CMDB or inventory access,
+but no handler executes commands or creates/consumes pending state.
 """
 
 from __future__ import annotations

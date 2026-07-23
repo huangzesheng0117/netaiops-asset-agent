@@ -277,7 +277,7 @@ class V4EntryRouterTests(unittest.TestCase):
 
     def test_unsupported_high_confidence_falls_back_without_factory(self):
         router, calls = self.make_router(
-            decision(IntentAction.cmdb_query),
+            decision(IntentAction.execute_provided_commands),
         )
         factory_calls = []
         result = router.route(
@@ -290,14 +290,17 @@ class V4EntryRouterTests(unittest.TestCase):
         self.assertTrue(result.fallback)
         self.assertEqual(
             result.reason,
-            "action_not_enabled_in_v4_2_3",
+            "action_not_enabled_in_v4_3_1",
         )
         self.assertEqual(factory_calls, [])
         self.assertEqual(calls["arbiter"], 1)
         self.assertEqual(calls["plan"], 1)
         self.assertEqual(result.audit_write_status, "ok")
         self.assertTrue(Path(result.audit_path).is_file())
-        self.assertEqual(result.shadow_state["decision"].action, IntentAction.cmdb_query)
+        self.assertEqual(
+            result.shadow_state["decision"].action,
+            IntentAction.execute_provided_commands,
+        )
 
     def test_technical_llm_failure_falls_back(self):
         router, _ = self.make_router(
@@ -376,7 +379,7 @@ class V4EntryRouterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             V4EntryRouter(
                 enabled=True,
-                allowed_actions="general_chat,cmdb_query",
+                allowed_actions="general_chat,execute_provided_commands",
                 store=self.store,
                 audit_writer=self.audit_writer,
                 legacy_builder=self.legacy_not_found,
@@ -388,7 +391,8 @@ class V4EntryRouterTests(unittest.TestCase):
             {
                 "NETAIOPS_V4_ENTRY_ENABLED": "1",
                 "NETAIOPS_V4_ENTRY_ALLOWED_ACTIONS": (
-                    "general_chat,advice_analysis,need_clarification"
+                    "general_chat,advice_analysis,need_clarification,"
+                    "cmdb_query,generate_commands"
                 ),
                 "NETAIOPS_V4_ENTRY_LIVE_LLM": "1",
                 "NETAIOPS_V4_ENTRY_MIN_CONFIDENCE": "0.80",
@@ -409,6 +413,8 @@ class V4EntryRouterTests(unittest.TestCase):
                 IntentAction.general_chat,
                 IntentAction.advice_analysis,
                 IntentAction.need_clarification,
+                IntentAction.cmdb_query,
+                IntentAction.generate_commands,
             },
         )
 

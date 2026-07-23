@@ -194,7 +194,7 @@ class V4LowRiskDispatcherTests(unittest.TestCase):
             )
             self.assertEqual(llm.calls, 1)
 
-    def test_unsupported_action_returns_explicit_stage_fallback(self):
+    def test_execute_action_returns_explicit_stage_fallback(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             dispatcher = self._dispatcher(
@@ -206,13 +206,13 @@ class V4LowRiskDispatcherTests(unittest.TestCase):
                 conversation_id="conv-dispatch-cmdb",
                 request_id="req-dispatch-cmdb",
                 request_user_field="v4_2_2_test",
-                decision=self._decision(IntentAction.cmdb_query),
+                decision=self._decision(IntentAction.execute_provided_commands),
             )
             self.assertEqual(result.status, EntryStatus.fallback)
             self.assertTrue(result.fallback_allowed)
             self.assertEqual(
                 result.fallback_reason,
-                "action_not_enabled_in_v4_2_2",
+                "action_not_enabled_in_v4_3_1",
             )
             self.assertIsNone(result.response)
             self.assertEqual(
@@ -230,7 +230,7 @@ class V4LowRiskDispatcherTests(unittest.TestCase):
                 [],
             )
 
-    def test_unsupported_action_audit_failure_is_visible(self):
+    def test_execute_action_audit_failure_is_visible(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             dispatcher = self._dispatcher(
@@ -243,7 +243,7 @@ class V4LowRiskDispatcherTests(unittest.TestCase):
                 conversation_id="conv-dispatch-fallback-audit-error",
                 request_id="req-dispatch-fallback-audit-error",
                 request_user_field="v4_2_2_test",
-                decision=self._decision(IntentAction.cmdb_query),
+                decision=self._decision(IntentAction.execute_provided_commands),
             )
             self.assertEqual(result.status, EntryStatus.error)
             self.assertFalse(result.fallback_allowed)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""V4.2-2 dispatcher for low-risk, no-side-effect actions.
+"""V4.3-1 dispatcher for no-side-effect actions.
 
 The dispatcher consumes an IntentDecision produced by the LLM Intent Arbiter.
 It never derives action from question text.
@@ -36,7 +36,9 @@ from netaiops_asset.chat_v4.contracts import (
 from netaiops_asset.chat_v4.handlers import (
     AdviceAnalysisHandler,
     ClarificationHandler,
+    CmdbQueryHandler,
     GeneralChatHandler,
+    GenerateCommandsHandler,
     HandlerOutcome,
     HandlerRequest,
     LowRiskHandler,
@@ -54,6 +56,8 @@ LOW_RISK_ACTIONS = frozenset(
         IntentAction.general_chat,
         IntentAction.advice_analysis,
         IntentAction.need_clarification,
+        IntentAction.cmdb_query,
+        IntentAction.generate_commands,
     }
 )
 
@@ -81,6 +85,8 @@ class LowRiskActionDispatcher:
             IntentAction.general_chat: GeneralChatHandler(),
             IntentAction.advice_analysis: AdviceAnalysisHandler(),
             IntentAction.need_clarification: ClarificationHandler(),
+            IntentAction.cmdb_query: CmdbQueryHandler(),
+            IntentAction.generate_commands: GenerateCommandsHandler(),
         }
 
     @staticmethod
@@ -217,10 +223,10 @@ class LowRiskActionDispatcher:
                 status="fallback",
                 side_effect_started=False,
                 fallback_allowed=True,
-                fallback_reason="action_not_enabled_in_v4_2_2",
+                fallback_reason="action_not_enabled_in_v4_3_1",
                 context_read_status="not_attempted",
                 context_write_status="not_attempted",
-                metadata={"stage": "v4.2-2"},
+                metadata={"stage": "v4.3-1"},
             )
             audit_write = self._write_audit(audit)
             fallback_metadata = {
@@ -252,7 +258,7 @@ class LowRiskActionDispatcher:
                 )
             return build_stage_fallback_entry(
                 decision=intent,
-                reason="action_not_enabled_in_v4_2_2",
+                reason="action_not_enabled_in_v4_3_1",
                 audit=audit,
                 context_metadata=fallback_metadata,
             )
@@ -333,12 +339,22 @@ class LowRiskActionDispatcher:
             answer_summary=outcome.answer,
             action=intent.action,
             planner_source="v4_intent_arbiter",
-            route_label="v4_2_2_low_risk_handler",
+            route_label="v4_3_1_no_side_effect_handler",
             effective_conversation_id=normalized_conversation_id,
-            record_source="v4_low_risk_handler",
+            record_source="v4_3_1_handler",
             request_user_field=normalized_user,
-            topic=context_read.context.topic,
-            device_context=context_read.context.device_context,
+            topic=str(
+                outcome.metadata.get("context_topic")
+                or context_read.context.topic
+                or ""
+            ),
+            device_context=(
+                outcome.metadata.get("device_context")
+                if isinstance(
+                    outcome.metadata.get("device_context"), dict
+                )
+                else context_read.context.device_context
+            ),
             last_intent={
                 "action": intent.action.value,
                 "confidence": float(intent.confidence),

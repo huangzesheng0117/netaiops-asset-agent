@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""V4.2-3 pre-route entry router for low-risk actions.
+"""V4.3-1 pre-route entry router for no-side-effect actions.
 
 The LLM Intent Arbiter is the only component that selects business action.
 This module applies deterministic stage, confidence and context-availability
-gates, then dispatches only V4.2 low-risk actions.
+gates, then dispatches the V4.3-1 no-side-effect action set.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from netaiops_asset.chat_v4.contracts import (
     OperationStatus,
 )
 
-V4_ENTRY_ROUTER_VERSION = "v4.entry_router.2_3"
+V4_ENTRY_ROUTER_VERSION = "v4.entry_router.3_1"
 DEFAULT_ALLOWED_ACTIONS = frozenset(LOW_RISK_ACTIONS)
 TECHNICAL_FALLBACK_REASONS = frozenset(
     {
@@ -100,7 +100,7 @@ def _parse_allowed_actions(
     invalid = actions - DEFAULT_ALLOWED_ACTIONS
     if invalid:
         raise ValueError(
-            "V4.2-3 allowed actions must be a subset of low-risk actions: "
+            "V4.3-1 allowed actions must be a subset of no-side-effect actions: "
             + ",".join(sorted(item.value for item in invalid))
         )
     return actions
@@ -308,7 +308,7 @@ class EntryRouteResult:
 
 
 class V4EntryRouter:
-    """Route low-risk actions before legacy V2/V3 business branches."""
+    """Route V4.3-1 no-side-effect actions before legacy branches."""
 
     def __init__(
         self,
@@ -541,7 +541,7 @@ class V4EntryRouter:
             context_read_status="read_only_snapshot",
             context_write_status="not_attempted",
             metadata={
-                "stage": "v4.2-3",
+                "stage": "v4.3-1",
                 "entry_router_version": V4_ENTRY_ROUTER_VERSION,
                 **metadata,
             },
@@ -651,7 +651,7 @@ class V4EntryRouter:
                 decision=decision,
                 status="fallback",
                 fallback_allowed=True,
-                fallback_reason="action_not_enabled_in_v4_2_3",
+                fallback_reason="action_not_enabled_in_v4_3_1",
                 metadata={
                     "allowed_actions": sorted(
                         item.value for item in self.allowed_actions
@@ -662,7 +662,7 @@ class V4EntryRouter:
                 enabled=True,
                 handled=False,
                 fallback=True,
-                reason="action_not_enabled_in_v4_2_3",
+                reason="action_not_enabled_in_v4_3_1",
                 request_id=request_id,
                 action=decision.action.value,
                 original_conversation_id=original_id,
@@ -739,7 +739,7 @@ class V4EntryRouter:
             handled=handled,
             fallback=entry.status == EntryStatus.fallback,
             reason=(
-                "v4_low_risk_entry_handled"
+                "v4_no_side_effect_entry_handled"
                 if handled
                 else entry.fallback_reason or "dispatcher_fallback"
             ),

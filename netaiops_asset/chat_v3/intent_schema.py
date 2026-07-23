@@ -19,6 +19,144 @@ CONFIDENCE_ACCEPT_THRESHOLD = 0.80
 CONFIDENCE_CLARIFY_THRESHOLD = 0.50
 
 
+CMDB_QUERY_OPERATIONS = frozenset({"auto", "devices", "detail", "by_ips"})
+COMMAND_GENERATION_CATEGORIES = frozenset(
+    {
+        "device_health",
+        "cpu",
+        "memory",
+        "route_table",
+        "bgp",
+        "bfd",
+        "interface_status",
+        "interface_error",
+        "optical_power",
+        "log",
+    }
+)
+
+
+class CmdbQuerySpec(BaseModel):
+    """Structured CMDB arguments selected by the LLM Intent Arbiter."""
+
+    operation: str = "auto"
+    keyword: str = ""
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    fields: List[str] = Field(default_factory=list)
+    ips: List[str] = Field(default_factory=list)
+    page: int = 1
+    page_size: int = 20
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def normalize_operation(cls, value: Any) -> str:
+        raw = str(value or "auto").strip().lower()
+        aliases = {
+            "list": "devices",
+            "query": "devices",
+            "device": "detail",
+            "detail_query": "detail",
+            "ips": "by_ips",
+            "by_ip": "by_ips",
+        }
+        normalized = aliases.get(raw, raw)
+        if normalized not in CMDB_QUERY_OPERATIONS:
+            raise ValueError(f"unsupported CMDB operation: {normalized}")
+        return normalized
+
+    @field_validator("keyword", mode="before")
+    @classmethod
+    def normalize_keyword(cls, value: Any) -> str:
+        return str(value or "").strip()[:512]
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def normalize_filters(cls, value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key).strip(): item
+            for key, item in value.items()
+            if str(key).strip() and item not in (None, "")
+        }
+
+    @field_validator("fields", "ips", mode="before")
+    @classmethod
+    def normalize_string_lists(cls, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            values = [part.strip() for part in value.replace("，", ",").split(",")]
+        elif isinstance(value, list):
+            values = [str(item).strip() for item in value]
+        else:
+            return []
+        result: List[str] = []
+        for item in values:
+            if item and item not in result:
+                result.append(item)
+        return result[:100]
+
+    @field_validator("page", mode="before")
+    @classmethod
+    def normalize_page(cls, value: Any) -> int:
+        try:
+            return max(1, int(value or 1))
+        except Exception:
+            return 1
+
+    @field_validator("page_size", mode="before")
+    @classmethod
+    def normalize_page_size(cls, value: Any) -> int:
+        try:
+            return min(max(1, int(value or 20)), 100)
+        except Exception:
+            return 20
+
+
+class CommandGenerationSpec(BaseModel):
+    """Structured deterministic command-generation arguments."""
+
+    category: str = "device_health"
+    interface: str = ""
+    max_commands: int = 8
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_category(cls, value: Any) -> str:
+        raw = str(value or "device_health").strip().lower()
+        aliases = {
+            "health": "device_health",
+            "cpu_check": "cpu",
+            "memory_check": "memory",
+            "route": "route_table",
+            "routing": "route_table",
+            "interface": "interface_status",
+            "interface_down": "interface_status",
+            "interface_errors": "interface_error",
+            "optical": "optical_power",
+            "transceiver": "optical_power",
+            "logs": "log",
+        }
+        normalized = aliases.get(raw, raw)
+        if normalized not in COMMAND_GENERATION_CATEGORIES:
+            raise ValueError(f"unsupported command generation category: {normalized}")
+        return normalized
+
+    @field_validator("interface", mode="before")
+    @classmethod
+    def normalize_interface(cls, value: Any) -> str:
+        return str(value or "").strip()[:256]
+
+    @field_validator("max_commands", mode="before")
+    @classmethod
+    def normalize_max_commands(cls, value: Any) -> int:
+        try:
+            return min(max(1, int(value or 8)), 8)
+        except Exception:
+            return 8
+
+
 class IntentAction(str, Enum):
     generate_commands = "generate_commands"
     execute_provided_commands = "execute_provided_commands"
@@ -54,6 +192,10 @@ class IntentDecision(BaseModel):
     reason: str = ""
     raw_user_text: str = ""
     context_summary: str = ""
+    cmdb_query: CmdbQuerySpec = Field(default_factory=CmdbQuerySpec)
+    command_generation: CommandGenerationSpec = Field(
+        default_factory=CommandGenerationSpec
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator(
@@ -88,6 +230,11 @@ class IntentDecision(BaseModel):
 
         if action == IntentAction.generate_commands:
             self.should_generate_commands = True
+            self.should_execute_commands = False
+            self.should_analyze_after_execution = False
+            self.commands_provided = False
+            self.commands = []
+            self.requires_confirmation = True
 
         if action in {
             IntentAction.execute_provided_commands,

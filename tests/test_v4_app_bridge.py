@@ -104,7 +104,7 @@ def make_route_result(
         reason=(
             "v4_low_risk_entry_handled"
             if handled
-            else "action_not_enabled_in_v4_2_3"
+            else "action_not_enabled_in_v4_3_1"
         ),
         request_id="request-bridge-001",
         action=action.value,
@@ -205,7 +205,7 @@ class V4AppBridgeTests(unittest.TestCase):
         result = make_route_result(
             handled=False,
             fallback=True,
-            action=IntentAction.cmdb_query,
+            action=IntentAction.execute_provided_commands,
         )
         router = FakeRouter(result, self.audit_writer)
         output = try_handle_v4_pre_route(
@@ -222,7 +222,7 @@ class V4AppBridgeTests(unittest.TestCase):
         self.assertEqual(self.appended, [])
         self.assertEqual(
             output["shadow_state"]["decision"].action,
-            IntentAction.cmdb_query,
+            IntentAction.execute_provided_commands,
         )
 
     def test_clarification_frontend_contract(self):

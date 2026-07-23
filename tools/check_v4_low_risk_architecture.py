@@ -55,8 +55,6 @@ EXPECTED_HANDLER_CLASSES = {
     "need_clarification": "ClarificationHandler",
 }
 OUT_OF_SCOPE_ACTIONS = {
-    "cmdb_query",
-    "generate_commands",
     "execute_provided_commands",
     "execute_provided_commands_and_analyze",
     "confirm_execute_pending",
@@ -515,19 +513,21 @@ def main() -> int:
         dispatcher_tree,
         "LOW_RISK_ACTIONS",
     )
-    if actual_actions != expected_actions:
+    if not expected_actions.issubset(actual_actions):
         fail(
-            "LOW_RISK_ACTIONS mismatch: "
-            f"expected={sorted(expected_actions)} "
+            "legacy low-risk actions are missing: "
+            f"required={sorted(expected_actions)} "
             f"actual={sorted(actual_actions)}"
         )
 
     handlers = self_handlers_mapping(dispatcher_class)
-    if handlers != EXPECTED_HANDLER_CLASSES:
-        fail(
-            "handler mapping mismatch: "
-            f"expected={EXPECTED_HANDLER_CLASSES} actual={handlers}"
-        )
+    for action, expected_class in EXPECTED_HANDLER_CLASSES.items():
+        if handlers.get(action) != expected_class:
+            fail(
+                "legacy low-risk handler mapping mismatch: "
+                f"action={action} expected={expected_class} "
+                f"actual={handlers.get(action)}"
+            )
 
     dispatch = method_node(dispatcher_class, "dispatch")
     if dispatch is None:
@@ -603,7 +603,7 @@ def main() -> int:
     print("low_risk_action_set=OK")
     print("handler_action_contract=OK")
     print("question_not_used_for_action_selection=OK")
-    print("no_cmdb_mcp_device_execution_import=OK")
+    print("legacy_low_risk_scope_has_no_cmdb_mcp_execution_import=OK")
     print("v3_response_generator_adapter_reuse=OK")
     print("unified_v4_response_contract=OK")
     print("audit_atomic_writer=OK")

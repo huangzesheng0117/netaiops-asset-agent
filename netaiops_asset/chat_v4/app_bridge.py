@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FastAPI/legacy-history bridge for the V4.2-3 pre-route entry router.
+"""FastAPI/legacy-history bridge for the V4.3-1 pre-route entry router.
 
 This module adapts V4 EntryResult to the existing frontend payload and keeps the
 legacy conversation list readable. It does not choose action from user text.
@@ -17,6 +17,7 @@ from netaiops_asset.chat_v4.audit_writer import AuditWriter
 from netaiops_asset.chat_v4.contracts import EntryStatus
 from netaiops_asset.chat_v4.entry_router import (
     EntryRouteResult,
+    V4_ENTRY_ROUTER_VERSION,
     V4EntryRouter,
     route_v4_entry,
 )
@@ -137,7 +138,7 @@ def _build_transport_payload(
     payload["v4_effective_conversation_id"] = (
         route_result.effective_conversation_id
     )
-    payload["v4_entry_router_version"] = "v4.entry_router.2_3"
+    payload["v4_entry_router_version"] = V4_ENTRY_ROUTER_VERSION
     payload["v4_fallback_used"] = False
     v4_meta = payload.get("v4")
     if not isinstance(v4_meta, dict):
@@ -146,7 +147,7 @@ def _build_transport_payload(
     v4_meta.update(
         {
             "entry_status": entry.status.value,
-            "entry_router_version": "v4.entry_router.2_3",
+            "entry_router_version": V4_ENTRY_ROUTER_VERSION,
             "legacy_history_recorded": False,
         }
     )
@@ -182,7 +183,7 @@ def build_v4_internal_error_transport(
         context_read_status="unknown",
         context_write_status="not_attempted",
         metadata={
-            "stage": "v4.2-3",
+            "stage": "v4.3-1",
             "internal_error": str(detail or "")[:2000],
             "request_user_field": str(request_user_field or ""),
             "action_available": False,
@@ -208,7 +209,7 @@ def build_v4_internal_error_transport(
         "v4_fallback_used": False,
         "v4_original_conversation_id": str(conversation_id or "").strip(),
         "v4_effective_conversation_id": str(conversation_id or "").strip(),
-        "v4_entry_router_version": "v4.entry_router.2_3",
+        "v4_entry_router_version": V4_ENTRY_ROUTER_VERSION,
         "v4": {
             "schema_version": "v4.response.v1",
             "handler_key": "v4_entry_router_internal_error",
@@ -218,7 +219,7 @@ def build_v4_internal_error_transport(
             "audit_id": audit.audit_id if audit_write.ok else "",
             "context_recorded": False,
             "entry_status": EntryStatus.error.value,
-            "entry_router_version": "v4.entry_router.2_3",
+            "entry_router_version": V4_ENTRY_ROUTER_VERSION,
             "legacy_history_recorded": False,
             "audit_write_status": audit_write.status.value,
             "audit_error_kind": (
